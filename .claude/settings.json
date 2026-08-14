@@ -1,0 +1,13 @@
+{
+  "env": {
+    "FINANCIAL_DATA_DIR": "/home/zt/stock"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(python .qoder/skills/security-analysis/scripts/*)",
+      "Bash(python3 .qoder/skills/security-analysis/scripts/*)",
+      "Bash(python financial_report.py*)",
+      "Bash(pip install *)"
+    ]
+  }
+}

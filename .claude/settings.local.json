@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 *)",
+      "Bash(FINANCIAL_DATA_DIR=/home/zt/stock python3 .qoder/skills/security-analysis/scripts/collect_financial_data.py tables)",
+      "Bash(python stock_dividend.py --help)",
+      "Bash(python *)",
+      "Bash(sqlite3 financial_data.db \"SELECT DISTINCT STD_ITEM_NAME FROM hk_income_statement WHERE stock_code='09987';\")",
+      "Bash(sqlite3 financial_data.db \"SELECT DISTINCT STD_ITEM_NAME FROM hk_balance_sheet WHERE stock_code='09987';\")",
+      "Bash(sqlite3 financial_data.db \"SELECT DISTINCT STD_ITEM_NAME FROM hk_cash_flow WHERE stock_code='09987';\")",
+      "Bash(sqlite3 -header -column financial_data.db \"SELECT year, SUM\\(CASE WHEN STD_ITEM_NAME='经营业务现金净额' THEN AMOUNT END\\) AS OCF, SUM\\(CASE WHEN STD_ITEM_NAME='购建固定资产' THEN AMOUNT END\\) AS capex, SUM\\(CASE WHEN STD_ITEM_NAME='已付股息\\(融资\\)' THEN AMOUNT END\\) AS dividend_paid, SUM\\(CASE WHEN STD_ITEM_NAME='回购股份' THEN AMOUNT END\\) AS buyback FROM hk_cash_flow WHERE stock_code='09987' AND quarter=4 GROUP BY year ORDER BY year DESC;\")",
+      "Bash(sqlite3 -header -column financial_data.db \"SELECT year, SUM\\(CASE WHEN STD_ITEM_NAME='现金及等价物' THEN AMOUNT END\\) AS cash, SUM\\(CASE WHEN STD_ITEM_NAME='总负债' THEN AMOUNT END\\) AS total_liab, SUM\\(CASE WHEN STD_ITEM_NAME='股东权益' THEN AMOUNT END\\) AS equity FROM hk_balance_sheet WHERE stock_code='09987' AND quarter=4 GROUP BY year ORDER BY year DESC;\")",
+      "Bash(sqlite3 -header -column financial_data.db \"SELECT * FROM stock_valuation WHERE stock_code LIKE '%9987%' OR stock_code LIKE '%YUMC%';\")",
+      "Bash(sqlite3 -header -column financial_data.db \"SELECT year, quarter, AMOUNT FROM hk_cash_flow WHERE stock_code='09987' AND STD_ITEM_NAME='购建固定资产' ORDER BY year;\")",
+      "Bash(sqlite3 -header -column financial_data.db \"SELECT DISTINCT STD_ITEM_NAME FROM hk_cash_flow WHERE stock_code='09987' AND \\(STD_ITEM_NAME LIKE '%购建%' OR STD_ITEM_NAME LIKE '%固定%' OR STD_ITEM_NAME LIKE '%资本%'\\);\")",
+      "Bash(sqlite3 -header -column financial_data.db \"SELECT year, quarter, SUM\\(CASE WHEN STD_ITEM_NAME='投资业务现金净额' THEN AMOUNT END\\) AS inv_cf, SUM\\(CASE WHEN STD_ITEM_NAME='投资支付现金' THEN AMOUNT END\\) AS inv_pay FROM hk_cash_flow WHERE stock_code='09987' GROUP BY year, quarter ORDER BY year, quarter;\")",
+      "WebSearch",
+      "Read(//home/zt/.claude/plugins/cache/claude-model-router-hook/claude-model-router-hook/2.0.0/hooks/**)",
+      "Read(//home/zt/.claude/plugins/cache/claude-model-router-hook/claude-model-router-hook/2.0.0/.claude-plugin/**)",
+      "Read(//home/zt/.claude/**)",
+      "Read(//home/zt/.config/claude-code/**)",
+      "Bash(grep -nA 20 \"def current_model_effort\" router/hookio.py)"
+    ]
+  }
+}

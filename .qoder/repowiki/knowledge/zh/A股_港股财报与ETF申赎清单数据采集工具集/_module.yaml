@@ -1,0 +1,17 @@
+schema_version: 1
+module_path: ""
+title: A股/港股财报与ETF申赎清单数据采集工具集
+scope:
+    - etf.py
+    - etf_redemption.py
+    - etf_weight.py
+    - financial_report.py
+    - _cleanup.py
+    - _test.py
+    - _test_dividend.py
+    - _verify.py
+    - financial_data.db
+    - stock_dividend.py
+source_files: []
+depends_on: []
+related_to: []
