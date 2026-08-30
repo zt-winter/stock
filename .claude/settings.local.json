@@ -19,7 +19,12 @@
       "Read(//home/zt/.claude/plugins/cache/claude-model-router-hook/claude-model-router-hook/2.0.0/.claude-plugin/**)",
       "Read(//home/zt/.claude/**)",
       "Read(//home/zt/.config/claude-code/**)",
-      "Bash(grep -nA 20 \"def current_model_effort\" router/hookio.py)"
+      "Bash(grep -nA 20 \"def current_model_effort\" router/hookio.py)",
+      "Bash(pip --version)",
+      "Bash(pip3 --version)",
+      "Bash(sqlite3 /home/zt/stock/financial_data.db \"SELECT name FROM sqlite_master WHERE type='table';\")",
+      "Bash(sqlite3 /home/zt/stock/financial_data.db \".schema stock_valuation\")",
+      "Bash(sqlite3 /home/zt/stock/financial_data.db \"SELECT * FROM stock_valuation WHERE code='515650';\")"
     ]
   }
 }
