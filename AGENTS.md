@@ -4,11 +4,11 @@ A股/港股股票投资分析工具集。五大模块（财报采集/ETF估值/�
 
 ## 技能单一数据源与软链接（重要）
 
-- `.claude/skills/security-analysis/` 是唯一权威源。
-- 以下路径均是指向它的**软链接**（改动自动同步，勿重复维护内容）：
-  - `.dsh/skills/security-analysis`
-  - `.qoder/skills/security-analysis`
-  - `.opencode/skills/security-analysis`
+- `.claude/skills/` 下每个 skill（`security-analysis`、`financial-report-pdf-extractor`、`financial-report-downloader`）都是唯一权威源，每个 skill 目录根部须有 `SKILL.md`（勿多层嵌套）。
+- 以下路径均是指向对应 skill 的**软链接**（改动自动同步，勿重复维护内容）：
+  - `.dsh/skills/<name>`
+  - `.qoder/skills/<name>`
+  - `.opencode/skills/<name>`
 - **只编辑 `.claude/` 下的文件；不要删除后重建文件**，否则会破坏所有软链接导致各工具（Claude Code / DSH / Qoder / OpenCode）配置不同步。
 - OpenCode 原生支持发现 `.claude/skills/*/SKILL.md` 与 `.opencode/skills/*/SKILL.md`，同名 skill 按真实路径去重，软链接不会产生重复条目。
 
