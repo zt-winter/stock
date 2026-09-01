@@ -2,9 +2,12 @@
 """
 Financial Statement Extractor from PDF Annual Reports
 
-This script extracts financial statements (balance sheet, income statement, cash flow)
-from corporate annual report PDFs. It uses text-based extraction which is more reliable
-for complex financial tables with bilingual content and accounting formatting.
+基于位置感知提取（ColumnPage），精确对齐栏目与金额：
+  1. 用 extract_text() 定位报表所在页
+  2. 用 ColumnPage（get_text('dict') + X/Y 聚类）提取结构化行列数据
+  3. 支持多行标签合并、跨页表格合并
+
+支持PDF后端（按优先级）：PyMuPDF > pypdf > pdfminer.six
 
 Usage:
     python3 extract_financial_statements.py <pdf_path> [start_page] [end_page]
@@ -13,18 +16,24 @@ Example:
     python3 extract_financial_statements.py 2024年报.pdf 141 160
 """
 
-import pdfplumber
-import re
 import sys
+import os
+import re
 import json
 from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass, asdict
-import os
+from dataclasses import dataclass, asdict, field
+
+# 导入兼容层
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from scripts.pdf_helper import open_pdf, get_pdf_backend, ColumnPage
+except ImportError:
+    from pdf_helper import open_pdf, get_pdf_backend, ColumnPage
 
 
 @dataclass
 class FinancialItem:
-    """Represents a single financial statement item with amounts for current and previous year."""
+    """Represents a single financial statement item."""
     label: str
     note: str = ""
     amount_current: str = ""
@@ -35,281 +44,324 @@ class FinancialItem:
 
 @dataclass
 class FinancialStatement:
-    """Represents a complete financial statement (balance sheet, income statement, or cash flow)."""
+    """Represents a complete financial statement."""
     name: str
     period: str
     items: List[FinancialItem]
     currency_unit: str = "RMB'000"
     page_range: str = ""
-    
+
+
+# ── 关键词定义 ──────────────────────────────────────────────
+
+STATEMENT_KEYWORDS = {
+    "balance_sheet": {
+        "keywords": [
+            "CONSOLIDATED STATEMENT OF FINANCIAL POSITION",
+            "STATEMENT OF FINANCIAL POSITION", "BALANCE SHEET",
+            "綜合財務狀況表", "财务状况表", "资产负债表",
+            "簡明綜合財務狀況表",
+        ],
+        "stop_keywords": [
+            "STATEMENT OF PROFIT", "STATEMENT OF CASH",
+            "損益表", "現金流量表", "利潤表", "權益變動表",
+        ],
+    },
+    "income_statement": {
+        "keywords": [
+            "CONSOLIDATED STATEMENT OF PROFIT OR LOSS",
+            "STATEMENT OF PROFIT OR LOSS", "INCOME STATEMENT",
+            "綜合損益表", "综合损益表", "利润表",
+            "簡明綜合損益表",
+        ],
+        "stop_keywords": [
+            "STATEMENT OF FINANCIAL", "STATEMENT OF CASH",
+            "財務狀況表", "現金流量表", "權益變動表",
+        ],
+    },
+    "cash_flow": {
+        "keywords": [
+            "CONSOLIDATED STATEMENT OF CASH FLOWS",
+            "STATEMENT OF CASH FLOWS", "CASH FLOW STATEMENT",
+            "綜合現金流量表", "现金流量表", "現金流量表",
+            "簡明綜合現金流量表",
+        ],
+        "stop_keywords": [
+            "STATEMENT OF FINANCIAL", "STATEMENT OF PROFIT",
+            "財務狀況表", "損益表", "權益變動表",
+        ],
+    },
+}
+
+HEADER_RE = re.compile(
+    r'^(非流動資產|NON.CURRENT.ASSETS|流動資產|CURRENT.ASSETS'
+    r'|資產$|ASSETS$|非流動負債|NON.CURRENT.LIAB'
+    r'|流動負債|CURRENT.LIAB|負債$|LIABILITIES$'
+    r'|權益$|EQUITY$)',
+    re.IGNORECASE,
+)
+
+TOTAL_KEYWORDS = [
+    "total", "總額", "總計", "合計", "净额", "淨額",
+    "權益及負債總額", "資產總額", "負債總額",
+]
+
 
 class FinancialPDFExtractor:
     """Main class for extracting financial statements from PDFs."""
-    
-    # Keywords to identify financial statements
-    BALANCE_SHEET_KEYWORDS = [
-        "CONSOLIDATED STATEMENT OF FINANCIAL POSITION",
-        "綜合財務狀況表",
-        "STATEMENT OF FINANCIAL POSITION",
-        "BALANCE SHEET"
-    ]
-    
-    INCOME_STATEMENT_KEYWORDS = [
-        "CONSOLIDATED STATEMENT OF PROFIT OR LOSS", 
-        "綜合損益表",
-        "STATEMENT OF PROFIT OR LOSS",
-        "INCOME STATEMENT",
-        "PROFIT AND LOSS"
-    ]
-    
-    CASH_FLOW_KEYWORDS = [
-        "CONSOLIDATED STATEMENT OF CASH FLOWS",
-        "綜合現金流量表",
-        "STATEMENT OF CASH FLOWS",
-        "CASH FLOW STATEMENT"
-    ]
-    
+
     def __init__(self, pdf_path: str):
-        """Initialize with PDF path."""
         self.pdf_path = pdf_path
-        self.pdf = pdfplumber.open(pdf_path)
-        self.statements = []
-        
-    def extract_text_from_pages(self, start_page: int = 140, end_page: int = 160) -> str:
-        """Extract text from specified page range."""
-        text = ""
-        for i in range(start_page - 1, min(end_page, len(self.pdf.pages))):
-            try:
-                page_text = self.pdf.pages[i].extract_text()
-                text += f"\n=== Page {i+1} ===\n{page_text}\n"
-            except Exception as e:
-                print(f"Error extracting page {i+1}: {e}")
-        return text
-    
-    def find_statement_pages(self, statement_type: str = "all") -> Dict[str, List[int]]:
-        """Find page numbers containing financial statements."""
-        statement_pages = {
-            "balance_sheet": [],
-            "income_statement": [],
-            "cash_flow": []
-        }
-        
+        self.pdf = open_pdf(pdf_path)
+
+    # ── 页面定位 ────────────────────────────────────────────
+
+    def find_statement_pages(self) -> Dict[str, int]:
+        """Find the first page number for each statement type."""
+        result: Dict[str, int] = {}
         for i, page in enumerate(self.pdf.pages):
-            try:
-                page_text = page.extract_text()
-                if not page_text:
+            text = (page.extract_text() or "").upper()
+            for stmt_type, cfg in STATEMENT_KEYWORDS.items():
+                if stmt_type in result:
                     continue
-                    
-                page_num = i + 1
-                
-                # Check for balance sheet
-                for keyword in self.BALANCE_SHEET_KEYWORDS:
-                    if keyword in page_text:
-                        statement_pages["balance_sheet"].append(page_num)
+                for kw in cfg["keywords"]:
+                    if kw.upper() in text:
+                        result[stmt_type] = i + 1
                         break
-                
-                # Check for income statement
-                for keyword in self.INCOME_STATEMENT_KEYWORDS:
-                    if keyword in page_text:
-                        statement_pages["income_statement"].append(page_num)
-                        break
-                
-                # Check for cash flow
-                for keyword in self.CASH_FLOW_KEYWORDS:
-                    if keyword in page_text:
-                        statement_pages["cash_flow"].append(page_num)
-                        break
-                        
-            except Exception as e:
-                print(f"Error processing page {i+1}: {e}")
-                
-        return statement_pages
-    
-    def extract_statement(self, start_page: int, end_page: int = None) -> Dict[str, FinancialStatement]:
-        """Extract financial statements from specified page range."""
-        if end_page is None:
-            end_page = start_page + 20  # Default to 20 pages after start
-            
-        text = self.extract_text_from_pages(start_page, end_page)
-        
-        # Split into lines and clean
-        lines = text.split('\n')
-        cleaned_lines = []
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith('==='):
-                cleaned_lines.append(line)
-        
-        # Parse financial statements
-        statements = {}
-        
-        # Identify statement sections
-        current_section = None
-        statement_lines = []
-        
-        for i, line in enumerate(cleaned_lines):
-            # Check for balance sheet
-            for keyword in self.BALANCE_SHEET_KEYWORDS:
-                if keyword in line:
-                    if current_section and statement_lines:
-                        statements[current_section] = self._parse_statement_lines(current_section, statement_lines)
-                    current_section = "balance_sheet"
-                    statement_lines = []
-                    break
-            
-            # Check for income statement
-            for keyword in self.INCOME_STATEMENT_KEYWORDS:
-                if keyword in line:
-                    if current_section and statement_lines:
-                        statements[current_section] = self._parse_statement_lines(current_section, statement_lines)
-                    current_section = "income_statement"
-                    statement_lines = []
-                    break
-            
-            # Check for cash flow
-            for keyword in self.CASH_FLOW_KEYWORDS:
-                if keyword in line:
-                    if current_section and statement_lines:
-                        statements[current_section] = self._parse_statement_lines(current_section, statement_lines)
-                    current_section = "cash_flow"
-                    statement_lines = []
-                    break
-            
-            if current_section:
-                statement_lines.append(line)
-        
-        # Parse the last section
-        if current_section and statement_lines:
-            statements[current_section] = self._parse_statement_lines(current_section, statement_lines)
-        
-        return statements
-    
-    def _parse_statement_lines(self, statement_type: str, lines: List[str]) -> FinancialStatement:
-        """Parse lines of text into a structured financial statement."""
-        items = []
-        
-        # Determine statement name and period
-        statement_name = ""
-        period = ""
-        
-        if statement_type == "balance_sheet":
-            statement_name = "Consolidated Balance Sheet"
-            period = "As at 31 December"
-        elif statement_type == "income_statement":
-            statement_name = "Consolidated Income Statement"
-            period = "Year ended 31 December"
-        elif statement_type == "cash_flow":
-            statement_name = "Consolidated Cash Flow Statement"
-            period = "Year ended 31 December"
-        
-        # Parse financial items
-        for line in lines:
-            # Skip header lines and section markers
-            if any(keyword in line for keyword in self.BALANCE_SHEET_KEYWORDS + 
-                   self.INCOME_STATEMENT_KEYWORDS + self.CASH_FLOW_KEYWORDS):
+        return result
+
+    def find_statement_end(self, stmt_type: str, start: int) -> int:
+        """Find where a statement ends (next statement starts or notes begin)."""
+        cfg = STATEMENT_KEYWORDS[stmt_type]
+        for i in range(start, min(start + 20, len(self.pdf.pages))):
+            text = (self.pdf.pages[i].extract_text() or "").upper()
+            for stop_kw in cfg["stop_keywords"]:
+                if stop_kw.upper() in text and i + 1 > start:
+                    return i  # stop keywords found on this page → previous page was end
+            # 检查是否进入附注
+            if "中期財務資料附註" in text or "NOTES TO" in text:
+                return i
+        return min(start + 10, len(self.pdf.pages))
+
+    # ── 位置感知行提取 ───────────────────────────────────────
+
+    def extract_column_rows(self, start: int, end: int) -> List[Tuple[int, 'ColumnRow']]:
+        """
+        从 start 到 end 页提取 ColumnRow 数据。
+        返回 [(page_num, ColumnRow), ...]
+        """
+        all_rows = []
+        for pnum in range(start, end + 1):
+            idx = pnum - 1
+            if idx < 0 or idx >= len(self.pdf.pages):
                 continue
-            
-            # Extract financial item
-            item = self._parse_financial_line(line)
-            if item:
-                items.append(item)
-        
-        return FinancialStatement(
-            name=statement_name,
-            period=period,
-            items=items,
-            currency_unit="RMB'000",
-            page_range=""
-        )
-    
-    def _parse_financial_line(self, line: str) -> Optional[FinancialItem]:
-        """Parse a single line of financial text into a FinancialItem."""
-        # Skip empty lines and page markers
-        if not line or line.startswith('Page'):
+            page = self.pdf.pages[idx]
+            cp = ColumnPage(page)
+            cp.detect_columns()
+            if len(cp.col_boundaries) < 2:
+                continue  # 不够列
+            rows = cp.extract_rows(y_tolerance=5.0)
+            for r in rows:
+                all_rows.append((pnum, r))
+        return all_rows
+
+    @staticmethod
+    def merge_continuation_labels(rows: List[Tuple[int, 'ColumnRow']]) -> List[Tuple[int, 'ColumnRow']]:
+        """
+        合并多行标签：若一行有标签但无金额，下一行无标签但有金额，
+        则将金额合并到上一行。不合并各自独立的标签行。
+        """
+        merged = []
+        i = 0
+        while i < len(rows):
+            pnum, row = rows[i]
+            label = row.label.strip()
+            has_amount = any(c.strip() for c in row.cols)
+
+            if label and not has_amount:
+                new_cols = list(row.cols)
+                j = i + 1
+                while j < len(rows):
+                    _, next_row = rows[j]
+                    next_label = next_row.label.strip()
+                    next_has = any(c.strip() for c in next_row.cols)
+                    if not next_label and next_has:
+                        new_cols = list(next_row.cols)
+                        j += 1
+                        break
+                    elif not next_label and not next_has:
+                        j += 1
+                        continue
+                    else:
+                        # 有标签的行 → 不合并
+                        break
+                from pdf_helper import ColumnRow as CR
+                merged.append((pnum, CR(label=label, cols=new_cols, y=row.y)))
+                i = j
+            else:
+                merged.append(rows[i])
+                i += 1
+        return merged
+
+    # ── 解析为 FinancialItem ────────────────────────────────
+
+    @staticmethod
+    def detect_column_mapping(ncols: int, sample_rows) -> Dict[str, int]:
+        """根据样本行推断列映射。"""
+        mapping = {"label": 0, "note": -1, "current": -1, "previous": -1}
+        # 默认布局：[label, (note), current, previous]
+        if ncols >= 4:
+            mapping["note"] = 1
+            mapping["current"] = ncols - 2
+            mapping["previous"] = ncols - 1
+        elif ncols == 3:
+            mapping["current"] = 1
+            mapping["previous"] = 2
+        elif ncols == 2:
+            mapping["current"] = 1
+
+        # 用样本行验证（检查附注列等）
+        for _, row in sample_rows[:10]:
+            for ci, c in enumerate(row.cols):
+                cs = c.strip()
+                if "附註" in cs or "附注" in cs or "note" in cs.lower():
+                    mapping["note"] = ci + 1  # +1 因为 cols 不含 label 列
+                    break
+                if "百萬元" in cs or "千元" in cs or "million" in cs.lower():
+                    # 货币单位行，不改变映射
+                    pass
+        return mapping
+
+    @staticmethod
+    def row_to_item(label: str, cols: List[str], col_map: Dict[str, int]) -> Optional[FinancialItem]:
+        """将标签和列数据转换为 FinancialItem。"""
+        if not label:
             return None
-        
-        # Check if this is a header line (bold or all caps)
-        is_header = line.isupper() or line.startswith('**')
-        is_total = 'total' in line.lower() or 'TOTAL' in line or '合计' in line
-        
-        # Extract note reference (numbers in parentheses at start)
-        note = ""
-        note_match = re.match(r'^\s*(\d+[a-z]?)\s+', line)
-        if note_match:
-            note = note_match.group(1)
-            line = line[note_match.end():].strip()
-        
-        # Try to extract amounts (accounting format with parentheses and commas)
-        # Pattern for accounting numbers: optional parentheses, digits with commas
-        amount_pattern = r'\(?\d{1,3}(?:,\d{3})*\)?'
-        amounts = re.findall(amount_pattern, line)
-        
-        if len(amounts) >= 2:
-            # Assume first amount is current year, second is previous year
-            amount_current = amounts[0]
-            amount_previous = amounts[1]
-            
-            # Remove amounts from label
-            label = line
-            for amount in amounts:
-                label = label.replace(amount, '', 1)
-            label = label.strip()
-            
-            # Clean up label (remove trailing punctuation, extra spaces)
-            label = re.sub(r'[:\-\.\s]+$', '', label)
-            
-        elif len(amounts) == 1:
-            # Only one amount found
-            amount_current = amounts[0]
-            amount_previous = ""
-            label = line.replace(amount_current, '').strip()
-            label = re.sub(r'[:\-\.\s]+$', '', label)
-        else:
-            # No amounts found, could be a header or descriptive line
-            amount_current = ""
-            amount_previous = ""
-            label = line.strip()
-        
-        # Skip lines that are just numbers or very short
-        if len(label) < 2 and not is_header and not is_total:
+
+        is_header = bool(HEADER_RE.match(label))
+        is_total = any(k in label.lower() for k in TOTAL_KEYWORDS)
+
+        note_idx = col_map.get("note", -1) - 1  # cols 索引从0开始
+        cur_idx = col_map.get("current", -1) - 1
+        prev_idx = col_map.get("previous", -1) - 1
+
+        note = cols[note_idx].strip() if 0 <= note_idx < len(cols) else ""
+        amt_cur = cols[cur_idx].strip() if 0 <= cur_idx < len(cols) else ""
+        amt_prev = cols[prev_idx].strip() if 0 <= prev_idx < len(cols) else ""
+
+        # 清洗金额
+        amt_cur = amt_cur.replace("–", "-").replace("—", "-").replace(" ", "")
+        amt_prev = amt_prev.replace("–", "-").replace("—", "-").replace(" ", "")
+
+        # 跳过纯说明行（无金额且非 header）
+        if not amt_cur and not amt_prev and not is_header:
+            skip_patterns = [
+                r'^\d{1,3}$', r'未經審核', r'經審核', r'百萬元', r'千元',
+                r'million', r'thousand', r'附註', r'附注',
+            ]
+            if any(re.search(p, label, re.IGNORECASE) for p in skip_patterns):
+                return None
+            if re.match(r'.*(年|月|日|三十|三十一|六月|十二月)$', label):
+                return None
             return None
-        
+
+        # 跳过表头行（金额列包含非数字文本，如“未經審核”）
+        if amt_cur or amt_prev:
+            def _is_numeric_or_empty(s: str) -> bool:
+                if not s:
+                    return True
+                # 允许: 数字、千位逗号、括号负数、负号、小数点、破折号(零值)
+                return bool(re.match(
+                    r'^[\d,\.\(\)\-\s]*$', s
+                ))
+            if not _is_numeric_or_empty(amt_cur) or not _is_numeric_or_empty(amt_prev):
+                return None
+
         return FinancialItem(
-            label=label,
-            note=note,
-            amount_current=amount_current,
-            amount_previous=amount_previous,
-            is_header=is_header,
-            is_total=is_total
+            label=label, note=note,
+            amount_current=amt_cur,
+            amount_previous=amt_prev,
+            is_header=is_header, is_total=is_total,
         )
-    
+
+    # ── 主提取流程 ─────────────────────────────────────────
+
+    def extract_statement(self, start_page: int = 1, end_page: int = 999) -> Dict[str, FinancialStatement]:
+        """Extract financial statements from specified page range."""
+        stmt_starts = self.find_statement_pages()
+
+        statements: Dict[str, FinancialStatement] = {}
+        names = {
+            "balance_sheet": "Consolidated Balance Sheet",
+            "income_statement": "Consolidated Income Statement",
+            "cash_flow": "Consolidated Cash Flow Statement",
+        }
+        periods = {
+            "balance_sheet": "As at period end",
+            "income_statement": "For the period",
+            "cash_flow": "For the period",
+        }
+
+        for stmt_type, start in stmt_starts.items():
+            if start < start_page or start > end_page:
+                continue
+
+            # 确定结束页
+            actual_end = self.find_statement_end(stmt_type, start)
+            actual_end = min(actual_end, end_page)
+
+            # 提取位置感知行
+            raw_rows = self.extract_column_rows(start, actual_end)
+            if not raw_rows:
+                continue
+
+            # 合并多行标签
+            merged = self.merge_continuation_labels(raw_rows)
+
+            # 检测列映射
+            ncols = max(len(r.cols) + 1 for _, r in merged) if merged else 4
+            col_map = self.detect_column_mapping(ncols, merged[:10])
+
+            # 解析为 FinancialItem
+            items: List[FinancialItem] = []
+            for pnum, row in merged:
+                item = self.row_to_item(row.label.strip(), row.cols, col_map)
+                if item:
+                    items.append(item)
+
+            if not items:
+                continue
+
+            statements[stmt_type] = FinancialStatement(
+                name=names.get(stmt_type, stmt_type),
+                period=periods.get(stmt_type, ""),
+                items=items,
+                page_range=f"{start}-{actual_end}",
+            )
+
+        return statements
+
+    # ── 输出 ───────────────────────────────────────────────
+
     def export_to_json(self, statements: Dict[str, FinancialStatement], output_path: str):
-        """Export extracted statements to JSON format."""
         output_data = {}
-        
         for stmt_type, stmt in statements.items():
             stmt_dict = asdict(stmt)
-            # Convert FinancialItem objects to dictionaries
             stmt_dict['items'] = [asdict(item) for item in stmt.items]
             output_data[stmt_type] = stmt_dict
-        
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(output_data, f, ensure_ascii=False, indent=2)
-        
         print(f"Exported to {output_path}")
-    
+
     def generate_markdown(self, statements: Dict[str, FinancialStatement]) -> str:
-        """Generate Markdown representation of financial statements."""
         md = "# Financial Statements Extracted from PDF\n\n"
-        
         for stmt_type, stmt in statements.items():
             md += f"## {stmt.name}\n"
             md += f"**{stmt.period}**  \n"
+            md += f"**Pages**: {stmt.page_range}  \n"
             md += f"**Currency Unit**: {stmt.currency_unit}  \n\n"
-            
-            md += "| Item | Note | Current Year | Previous Year |\n"
-            md += "|------|------|--------------|---------------|\n"
-            
+            md += "| Item | Note | Current | Previous |\n"
+            md += "|------|------|---------|----------|\n"
             for item in stmt.items:
                 if item.is_header:
                     md += f"| **{item.label}** | | | |\n"
@@ -317,82 +369,68 @@ class FinancialPDFExtractor:
                     md += f"| **{item.label}** | {item.note} | **{item.amount_current}** | **{item.amount_previous}** |\n"
                 else:
                     md += f"| {item.label} | {item.note} | {item.amount_current} | {item.amount_previous} |\n"
-            
             md += "\n\n"
-        
         return md
-    
+
     def close(self):
-        """Close the PDF file."""
         self.pdf.close()
 
 
 def main():
-    """Main entry point."""
     if len(sys.argv) < 2:
         print("Usage: python3 extract_financial_statements.py <pdf_path> [start_page] [end_page]")
-        print("Example: python3 extract_financial_statements.py 2024年报.pdf 141 160")
+        print(f"\nCurrent PDF backend: {get_pdf_backend()}")
         sys.exit(1)
-    
+
     pdf_path = sys.argv[1]
-    start_page = int(sys.argv[2]) if len(sys.argv) > 2 else 140
-    end_page = int(sys.argv[3]) if len(sys.argv) > 3 else 160
-    
+    start_page = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    end_page = int(sys.argv[3]) if len(sys.argv) > 3 else 999
+
     if not os.path.exists(pdf_path):
         print(f"Error: PDF file not found: {pdf_path}")
         sys.exit(1)
-    
-    print(f"Extracting financial statements from {pdf_path} (pages {start_page}-{end_page})")
-    
+
+    print(f"Extracting from {pdf_path} (pages {start_page}-{end_page})")
+    print(f"PDF backend: {get_pdf_backend()}")
+
     extractor = FinancialPDFExtractor(pdf_path)
-    
     try:
-        # Find statement pages
-        statement_pages = extractor.find_statement_pages()
-        print("\nFound financial statements at pages:")
-        for stmt_type, pages in statement_pages.items():
-            if pages:
-                print(f"  {stmt_type}: {pages}")
-        
-        # Extract statements
+        # 定位报表页面
+        stmt_pages = extractor.find_statement_pages()
+        print("\nStatement pages found:")
+        for st, pg in stmt_pages.items():
+            end = extractor.find_statement_end(st, pg)
+            print(f"  {st}: pages {pg}-{end}")
+
+        # 提取
         statements = extractor.extract_statement(start_page, end_page)
-        
+
         if not statements:
-            print("\nNo financial statements found in specified page range.")
-            print("Trying to extract from entire PDF...")
-            statements = extractor.extract_statement(1, min(200, len(extractor.pdf.pages)))
-        
-        if statements:
-            print(f"\nSuccessfully extracted {len(statements)} financial statement(s):")
-            for stmt_type in statements:
-                print(f"  - {stmt_type}")
-            
-            # Export to JSON
-            base_name = os.path.splitext(os.path.basename(pdf_path))[0]
-            json_path = f"{base_name}_financial_statements.json"
-            extractor.export_to_json(statements, json_path)
-            
-            # Generate Markdown
-            md_path = f"{base_name}_financial_statements.md"
-            md_content = extractor.generate_markdown(statements)
-            with open(md_path, 'w', encoding='utf-8') as f:
-                f.write(md_content)
-            print(f"Generated Markdown: {md_path}")
-            
-            # Print summary
-            print("\n" + "="*60)
-            print(md_content[:2000])  # Print first 2000 chars as preview
-            if len(md_content) > 2000:
-                print("... (truncated, see full file)")
-            print("="*60)
-            
-        else:
-            print("\nNo financial statements could be extracted.")
-            print("Consider:")
-            print("1. Adjusting page range (default is 140-160)")
-            print("2. Checking if PDF is text-searchable (not scanned)")
-            print("3. Using OCR if PDF is scanned")
-            
+            print("\nNo financial statements found.")
+            return
+
+        print(f"\nExtracted {len(statements)} statement(s):")
+        for st, stmt in statements.items():
+            n_items = len([i for i in stmt.items if not i.is_header])
+            print(f"  - {st}: {n_items} items (pages {stmt.page_range})")
+
+        # 输出
+        base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+        json_path = f"{base_name}_financial_statements.json"
+        extractor.export_to_json(statements, json_path)
+
+        md_path = f"{base_name}_financial_statements.md"
+        md_content = extractor.generate_markdown(statements)
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(md_content)
+        print(f"Generated Markdown: {md_path}")
+
+        print("\n" + "=" * 70)
+        print(md_content[:3000])
+        if len(md_content) > 3000:
+            print("... (truncated, see full file)")
+        print("=" * 70)
+
     finally:
         extractor.close()
 

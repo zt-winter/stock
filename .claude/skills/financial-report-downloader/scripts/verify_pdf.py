@@ -3,6 +3,8 @@
 财务报告PDF验证脚本
 功能：独立验证PDF文件是否为指定公司的正式财务报告
 可用于验证已下载文件或批量验证目录中的文件
+
+PDF后端支持（按优先级）：PyMuPDF > pypdf > pdfminer.six
 """
 
 import os
@@ -14,11 +16,14 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 import glob
 
+# 导入兼容层：优先从 scripts.pdf_helper 导入，支持独立运行和模块导入两种方式
 try:
-    import pdfplumber
+    from scripts.pdf_helper import open_pdf, get_pdf_backend
 except ImportError:
-    print("错误：需要安装pdfplumber库，请运行: pip install pdfplumber")
-    sys.exit(1)
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    if _script_dir not in sys.path:
+        sys.path.insert(0, _script_dir)
+    from pdf_helper import open_pdf, get_pdf_backend
 
 # 配置日志
 logging.basicConfig(
@@ -53,7 +58,7 @@ class PDFValidator:
             "en": ["Supplement", "Supplementary", "Addendum", "Profit Alert", "Trading Update", "Presentation", "Press Release"]
         }
         
-        logger.info("PDF验证器初始化完成")
+        logger.info(f"PDF验证器初始化完成，使用后端: {get_pdf_backend()}")
     
     def validate_file(self, pdf_path: str, company_name: Optional[str] = None, 
                      report_type: Optional[str] = None) -> Dict:
@@ -62,7 +67,7 @@ class PDFValidator:
         
         Args:
             pdf_path: PDF文件路径
-            company_name: 公司名称（可选，用于验证匹配）
+            company_name: 公司名称（用于验证匹配）
             report_type: 报告类型（可选，"annual"或"interim"）
             
         Returns:
@@ -96,7 +101,7 @@ class PDFValidator:
             result["file_size"] = os.path.getsize(pdf_path)
             
             # 打开PDF文件并提取信息
-            with pdfplumber.open(pdf_path) as pdf:
+            with open_pdf(pdf_path) as pdf:
                 result["page_count"] = len(pdf.pages)
                 
                 if len(pdf.pages) == 0:
@@ -321,7 +326,7 @@ class PDFValidator:
         计算PDF质量指标
         
         Args:
-            pdf: pdfplumber打开的PDF对象
+            pdf: open_pdf() 返回的 PDFWrapper 对象
             
         Returns:
             质量指标字典

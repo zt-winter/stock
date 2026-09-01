@@ -7,7 +7,7 @@
 ## 验证流程
 
 ### 1. 文本提取
-- 使用pdfplumber库打开PDF文件
+- 使用pdf_helper兼容层（支持PyMuPDF/pypdf/pdfminer.six）打开PDF文件
 - 提取第一页文本内容（前1000字符）
 - 文本预处理：转换为小写，去除多余空格和标点
 

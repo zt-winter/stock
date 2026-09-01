@@ -152,9 +152,10 @@ equity_pattern = r'EQUITY|權益|股本|儲備'
 
 ### Step 1: Extract Raw Text
 ```python
-import pdfplumber
+# pdf_helper 兼容层，支持 PyMuPDF > pypdf > pdfminer.six
+from pdf_helper import open_pdf
 
-with pdfplumber.open('report.pdf') as pdf:
+with open_pdf('report.pdf') as pdf:
     text = ''
     for page in pdf.pages[140:160]:  # Typical financial statement pages
         text += page.extract_text() + '\n'
@@ -230,11 +231,13 @@ for image in images:
 ```
 
 ### Issue 2: Complex Table Structures
-**Solution**: Use pdfplumber's table extraction
+**Solution**: Use PyMuPDF's table extraction (via pdf_helper)
 ```python
-with pdfplumber.open('report.pdf') as pdf:
+from pdf_helper import open_pdf
+
+with open_pdf('report.pdf') as pdf:
     for page in pdf.pages[140:160]:
-        tables = page.extract_tables()
+        tables = page.extract_tables()  # 仅 PyMuPDF 后端支持
         for table in tables:
             # Process table data
             for row in table:

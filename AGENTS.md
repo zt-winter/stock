@@ -1,6 +1,14 @@
 # AGENTS.md
 
-A股/港股股票投资分析工具集。五大模块（财报采集/ETF估值/周期股/红利股/行业竞争）共用同一个 SQLite 数据库 `financial_data.db`。分析前先加载 `security-analysis` skill（opencode 用 `skill` 工具加载，Claude Code 用 `/security-analysis`），其中含完整的子文档、报告框架与行业知识库。
+A股/港股股票投资分析工具集。包含三个 skill：
+
+| Skill | 用途 |
+|-------|------|
+| `security-analysis` | 五大分析模块（财报采集/ETF估值/周期股/红利股/行业竞争），共用 `financial_data.db` |
+| `financial-report-pdf-extractor` | 从年报/中报 PDF 提取财务报表数据（ColumnPage 位置感知提取） |
+| `financial-report-downloader` | 搜索、下载、验证并存储上市公司财报 PDF |
+
+分析前先加载 `security-analysis` skill（opencode 用 `skill` 工具加载，Claude Code 用 `/security-analysis`），其中含完整的子文档、报告框架与行业知识库。
 
 ## 技能单一数据源与软链接（重要）
 
@@ -14,7 +22,7 @@ A股/港股股票投资分析工具集。五大模块（财报采集/ETF估值/�
 
 ## 运行环境
 
-- 必须使用项目 venv：`.venv/bin/python`（已装 akshare 1.18.x、pandas、requests）。系统 `python`/`python3` 未装 akshare，直接跑脚本会 ImportError。
+- 必须使用项目 venv：`.venv/bin/python`（已装 akshare 1.18.x、pandas、requests、PyMuPDF、pypdf、pdfminer.six）。系统 `python`/`python3` 未装这些库，直接跑脚本会 ImportError。
 - 数据库定位顺序：`FINANCIAL_DATA_DIR` 环境变量 > 当前工作目录 > 向上查找含 `financial_data.db` 的目录（默认命中 `/home/zt/stock/financial_data.db`）。`--db`/`--db-dir` 参数仍然优先。
 - 分析前必须先执行 `collect` 命令采集数据，否则查不到数据。
 - 估值类接口有 7 天缓存，加 `--refresh` 强制刷新。
@@ -38,7 +46,23 @@ A股/港股股票投资分析工具集。五大模块（财报采集/ETF估值/�
 # 查询数据库
 .venv/bin/python .claude/skills/security-analysis/scripts/collect_financial_data.py tables
 .venv/bin/python .claude/skills/security-analysis/scripts/collect_financial_data.py query --code 600519 --table em_financial_indicator --year 2024
+
+# 财报 PDF 提取（从 PDF 提取资产负债表/损益表/现金流量表）
+.venv/bin/python .claude/skills/financial-report-pdf-extractor/scripts/extract_financial_statements.py report/年报.pdf
+.venv/bin/python .claude/skills/financial-report-pdf-extractor/scripts/extract_balance_sheet.py report/年报.pdf
+
+# 财报下载（搜索+下载+验证）
+.venv/bin/python .claude/skills/financial-report-downloader/scripts/download_financial_reports.py --company "海尔智家" --code "600690" --year 2024 --report-type "年报"
+.venv/bin/python .claude/skills/financial-report-downloader/scripts/verify_pdf.py --file report/年报.pdf --company "腾讯" --report-type "年报"
 ```
+
+## PDF 提取技术说明
+
+财报 PDF 提取采用 **ColumnPage 位置感知提取**（而非正则或 find_tables()）：
+- `pdf_helper.py` 封装 PyMuPDF/pypdf/pdfminer.six 三种后端，优先 PyMuPDF
+- `ColumnPage` 通过 `get_text('dict')` 获取 span 坐标，按 X 频率聚类列、Y 自适应聚类行
+- 精确对齐栏目与金额，解决多列表格中传统正则解析的错位问题
+- 两个 PDF skill（extractor 和 downloader）各有一份相同的 `pdf_helper.py` 副本
 
 ## 报告规范（解读分析结果时）
 

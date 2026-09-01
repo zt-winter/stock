@@ -1,40 +1,30 @@
 ---
 name: financial-report-pdf-extractor
-description: 'Comprehensive skill for extracting financial data from corporate annual report PDFs. Use when Claude needs to: (1) Extract financial statements (balance sheet, income statement, cash flow) from company annual reports; (2) Parse Chinese/English bilingual financial reports (especially HKFRS/IFRS compliant); (3) Convert PDF financial tables into structured Markdown or JSON format; (4) Analyze financial ratios and metrics from extracted data. Trigger for tasks involving "financial statements", "annual report", "PDF extraction", "balance sheet", "income statement", or "cash flow statement" from corporate reports.'
+description: '从上市公司年报/中报 PDF 中提取财务报表数据（资产负债表、损益表、现金流量表）。采用 ColumnPage 位置感知提取技术，通过 X/Y 坐标聚类精确对齐栏目与金额，支持中英文双语财报（HKFRS/IFRS）。输出结构化 JSON 和 Markdown 表格。适用于：提取财报PDF中的财务数据、解析中英文双语报表、将PDF表格转为结构化数据。'
 ---
 
 # Financial Report PDF Extractor
 
-## Overview
+## 概述
 
-This skill provides specialized workflows and tools for extracting, parsing, and structuring financial data from corporate annual report PDFs. It handles the unique challenges of financial PDFs including bilingual content (Chinese/English), complex table structures, accounting formatting (parentheses for negatives, thousands separators), and standardized financial statement layouts according to HKFRS/IFRS standards.
+从上市公司年报/中报 PDF 中提取财务报表数据。核心技术是 **ColumnPage 位置感知提取**：通过 `get_text('dict')` 获取每个文本 span 的精确 (x, y) 坐标，按 X 频率聚类列边界、按 Y 自适应聚类行，精确对齐栏目名称与金额数字。底层使用 pdf_helper 兼容层，支持 PyMuPDF（首选）、pypdf、pdfminer.six 三种后端。
 
-The skill includes Python scripts for reliable extraction, reference materials for financial accounting standards, and templates for standardized output formats.
+支持中英文双语财报（HKFRS/IFRS）、会计格式（括号负数、千位逗号）、跨页表格合并。
 
-## Quick Start
-
-### Basic Extraction Workflow
-
-When extracting financial statements from a PDF:
-
-1. **Identify PDF location**: Locate the annual report PDF file (typically named like "2024年报.pdf" or "Annual_Report_2024.pdf")
-2. **Find financial statement pages**: Financial statements usually appear after the auditor's report, typically around pages 140-160
-3. **Choose extraction method**:
-   - For structured extraction: Use `scripts/extract_financial_tables.py` for table-based extraction
-   - For text-based extraction: Use `scripts/extract_financial_statements.py` for reliable text parsing
-4. **Process the output**: Convert extracted data into standardized Markdown tables with year-over-year comparisons
-
-### Example Commands
+## 快速开始
 
 ```bash
-# Extract tables from specific pages
-python3 scripts/extract_financial_tables.py /path/to/report.pdf 141 160
+# 提取全部财务报表（自动定位资产负债表、损益表、现金流量表）
+.venv/bin/python .claude/skills/financial-report-pdf-extractor/scripts/extract_financial_statements.py report/年报.pdf
 
-# Extract and structure financial statements
-python3 scripts/extract_financial_statements.py /path/to/report.pdf
+# 指定页码范围
+.venv/bin/python .claude/skills/financial-report-pdf-extractor/scripts/extract_financial_statements.py report/年报.pdf 140 160
 
-# Extract specific financial statement
-python3 scripts/extract_balance_sheet.py /path/to/report.pdf
+# 仅提取资产负债表（自动分类资产/负债/权益）
+.venv/bin/python .claude/skills/financial-report-pdf-extractor/scripts/extract_balance_sheet.py report/年报.pdf
+
+# JSON → Markdown 转换
+.venv/bin/python .claude/skills/financial-report-pdf-extractor/scripts/generate_markdown_tables.py data.json output.md
 ```
 
 ## Core Capabilities
@@ -71,58 +61,32 @@ Financial reports in Hong Kong/China markets typically include both English and 
 - **Currency units**: Typically in thousands ("RMB'000") or millions
 - **Rounding**: Numbers often rounded to nearest thousand
 
-## Workflow Decision Tree
+## 提取架构
 
-When approaching a financial PDF extraction task:
+### ColumnPage 位置感知提取（核心）
 
-```
-Is the PDF text-searchable?
-├── Yes: Use text extraction (scripts/extract_financial_statements.py)
-└── No: Try table extraction (scripts/extract_financial_tables.py) or OCR
+1. **定位报表页面**：`extract_text()` 关键词匹配，定位资产负债表/损益表/现金流量表所在页
+2. **列边界检测**：`detect_columns()` 基于 span 的 X 坐标频率聚类（min_gap=25, min_freq=2），过滤低频干扰（表头、特殊符号）
+3. **行聚类**：`extract_rows(y_tolerance=5.0)` 自适应 Y 聚类，处理标签与金额的微小 Y 偏差
+4. **列分配**：每个 span 映射到最近的列，返回 `ColumnRow(label, cols, y)`
+5. **合并续行**：多行标签自动合并，跨页表格自动拼接
 
-Which financial statements are needed?
-├── All three: Extract pages 140-160 comprehensively
-├── Balance sheet only: Search for "STATEMENT OF FINANCIAL POSITION"
-├── Income statement only: Search for "STATEMENT OF PROFIT OR LOSS"
-└── Cash flow only: Search for "STATEMENT OF CASH FLOWS"
+### 输出格式
 
-What output format?
-├── Markdown tables: Use scripts/generate_markdown_tables.py
-├── JSON structured data: Use scripts/convert_to_json.py
-└── Excel spreadsheet: Use scripts/export_to_excel.py
-```
+- **JSON**：结构化数据，含 label/note/amount_current/amount_previous/is_header/is_total
+- **Markdown**：可直接阅读的表格，header 行加粗，total 行加粗
+- 可用 `generate_markdown_tables.py` 从 JSON 转 Markdown
 
-## Detailed Extraction Methods
+## 已知挑战与解决方案
 
-### Text-Based Extraction (Recommended)
-
-For most financial PDFs, text extraction is more reliable than table extraction:
-
-1. **Extract all text** from target pages using pdfplumber
-2. **Split by lines** and identify statement sections using keywords
-3. **Parse line-by-line** matching financial item patterns
-4. **Extract amounts** using regex patterns for accounting numbers
-5. **Handle bilingual labels** by checking both English and Chinese
-
-### Table-Based Extraction
-
-When tables are well-structured:
-
-1. **Extract tables** using pdfplumber's table detection
-2. **Clean table data** by removing empty rows/columns
-3. **Identify header rows** containing year columns
-4. **Map financial items** to standardized categories
-5. **Handle merged cells** and multi-line labels
-
-### Key Challenges and Solutions
-
-| Challenge                                | Solution                                   |
-| ---------------------------------------- | ------------------------------------------ |
-| Tables split across pages                | Extract from multiple pages and merge      |
-| Bilingual labels creating duplicate rows | Use first occurrence, ignore translations  |
-| Parentheses for negative numbers         | Convert to negative values during parsing  |
-| Missing or inconsistent labels           | Use fuzzy matching with reference mappings |
-| Currency unit variations                 | Detect and standardize (all to thousands)  |
+| 挑战 | 解决方案 |
+|------|----------|
+| 多列表格中标签与金额分行显示 | ColumnPage 位置感知提取，按坐标自动对齐 |
+| PyMuPDF find_tables() 截断中文标签 | 改用 ColumnPage（get_text('dict')）避免截断 |
+| 跨页表格 | 多页提取后自动合并续行 |
+| 表头干扰行（未經審核、百萬元等） | 非数字金额过滤 + 正则跳过 |
+| 括号负数如 (1,234) | 自动转换为负值 |
+| 货币单位不统一 | 检测并标注单位（千元/百万元） |
 
 ## Financial Statement Templates
 
@@ -168,38 +132,35 @@ When tables are well-structured:
 | ...                                    | ...   | ...       | ...        |
 ```
 
-## Scripts Reference
+## 脚本参考
 
 ### extract_financial_statements.py
-Main script for comprehensive financial statement extraction.
+主提取脚本，自动定位并提取资产负债表、损益表、现金流量表。
 
-**Usage**:
 ```bash
-python3 extract_financial_statements.py <pdf_path> [start_page] [end_page]
+.venv/bin/python extract_financial_statements.py <pdf_path> [start_page] [end_page]
 ```
 
-**Features**:
-- Automatically detects financial statement sections
-- Extracts balance sheet, income statement, and cash flow statement
-- Handles bilingual content (English/Chinese)
-- Outputs structured JSON and Markdown formats
-- Includes year-over-year comparisons
+**输出**：`{文件名}_financial_statements.json` + `{文件名}_financial_statements.md`
 
 ### extract_balance_sheet.py
-Specialized script for balance sheet extraction only.
+专项资产负债表提取，自动分类资产/负债/权益三大板块，计算负债率。
 
-**Usage**:
 ```bash
-python3 extract_balance_sheet.py <pdf_path>
+.venv/bin/python extract_balance_sheet.py <pdf_path> [start_page] [end_page]
 ```
+
+**输出**：`{文件名}_balance_sheet.json` + `{文件名}_balance_sheet.md`
 
 ### generate_markdown_tables.py
-Converts extracted financial data to standardized Markdown tables.
+JSON → Markdown 转换工具。
 
-**Usage**:
 ```bash
-python3 generate_markdown_tables.py <json_input> <output_md>
+.venv/bin/python generate_markdown_tables.py <json_input> <output_md>
 ```
+
+### pdf_helper.py
+PDF 兼容层，封装 PyMuPDF/pypdf/pdfminer.six，提供 `open_pdf()`、`ColumnPage`、`ColumnRow` 等统一 API。两个 skill（extractor 和 downloader）各有一份相同副本。
 
 ## Financial Accounting References
 
@@ -229,28 +190,24 @@ For detailed financial accounting standards and item mappings:
 - **Currency**: USD in thousands or millions
 - **Sections**: Balance Sheets, Statements of Operations, Statements of Cash Flows
 
-## Troubleshooting
+## 常见问题
 
-### Common Issues and Solutions
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| 找不到报表 | 页码范围不对 | 指定页码范围或让脚本自动扫描全文件 |
+| 栏目与金额不对齐 | 未使用 ColumnPage | 确保使用 pdf_helper 的 ColumnPage 而非 find_tables() |
+| 合并标签错误 | 两个独立 header 被拼接 | merge_continuation_labels 不合并有独立标签的行 |
+| 负债总计错误 | "权益及负债总额"覆盖 | parse_balance_sheet 已加互斥过滤 |
+| 扫描 PDF | 无文本层 | 需先 OCR 再提取 |
 
-| Issue                         | Possible Cause                | Solution                                   |
-| ----------------------------- | ----------------------------- | ------------------------------------------ |
-| No financial statements found | Wrong page range              | Search for "STATEMENT OF" or "財務狀況表"  |
-| Amounts extracted incorrectly | Parentheses not handled       | Enable accounting format parsing           |
-| Duplicate rows extracted      | Bilingual content duplication | Filter by language or use first occurrence |
-| Tables split across pages     | PDF pagination                | Extract from multiple consecutive pages    |
-| OCR needed                    | Scanned PDF                   | Use OCR preprocessing before extraction    |
+### 验证清单
 
-### Validation Checklist
-
-After extraction, verify:
-- [ ] Balance sheet balances: Total Assets = Total Liabilities + Equity
-- [ ] Cash flow reconciliation: Net cash flow = Cash end - Cash begin
-- [ ] Year-over-year comparisons available
-- [ ] All major financial items extracted
-- [ ] Currency units consistent
-- [ ] Notes/references included where applicable
+提取后应验证：
+- [ ] 资产负债表平衡：资产总额 = 负债总额 + 权益总额
+- [ ] 现金流量表核对：期末现金 = 期初现金 + 净增加额
+- [ ] 附注编号正确捕获
+- [ ] 货币单位一致
 
 ---
 
-**Skill Design**: Based on experience extracting financial statements from Hong Kong-listed company reports with bilingual (Chinese/English) content, complex table structures, and HKFRS accounting standards.
+**技能设计**：基于港股/ A 股上市公司财报提取经验，采用 ColumnPage 位置感知提取技术解决多列表格中标签与金额不对齐的核心问题。

@@ -3,6 +3,8 @@
 财务报告下载主脚本
 功能：从网络搜索、下载、验证并规范化存储上市公司财务报告PDF文件
 支持：A股（沪深交易所）、港股（香港交易所）上市公司年度报告和中期报告
+
+PDF后端支持（按优先级）：PyMuPDF > pypdf > pdfminer.six
 """
 
 import os
@@ -20,11 +22,14 @@ import shutil
 # 添加项目根目录到路径，以便导入其他模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 导入兼容层
 try:
-    import pdfplumber
+    from scripts.pdf_helper import open_pdf, get_pdf_backend
 except ImportError:
-    print("错误：需要安装pdfplumber库，请运行: pip install pdfplumber")
-    sys.exit(1)
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    if _script_dir not in sys.path:
+        sys.path.insert(0, _script_dir)
+    from pdf_helper import open_pdf, get_pdf_backend
 
 # 配置日志
 logging.basicConfig(
@@ -75,7 +80,7 @@ class FinancialReportDownloader:
             "en": ["Supplement", "Supplementary", "Addendum", "Profit Alert", "Trading Update", "Presentation", "Press Release"]
         }
         
-        logger.info(f"财务报告下载器初始化完成，输出目录：{output_dir}")
+        logger.info(f"财务报告下载器初始化完成，输出目录：{output_dir}，PDF后端：{get_pdf_backend()}")
     
     def download_pdf(self, url: str, temp_path: str) -> Tuple[bool, str, int]:
         """
@@ -136,7 +141,7 @@ class FinancialReportDownloader:
         
         try:
             # 打开PDF文件并提取第一页文本
-            with pdfplumber.open(pdf_path) as pdf:
+            with open_pdf(pdf_path) as pdf:
                 if len(pdf.pages) == 0:
                     return False, "PDF文件无页面", validation_result
                 

@@ -78,7 +78,7 @@
 ### 5. 文件验证算法
 
 #### 验证步骤
-1. 使用pdfplumber打开PDF文件
+1. 使用pdf_helper兼容层（支持PyMuPDF/pypdf/pdfminer.six）打开PDF文件
 2. 提取第一页文本（前1000字符）
 3. 文本预处理：转换为小写，去除空格和标点
 4. 关键词匹配验证

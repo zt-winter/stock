@@ -18,7 +18,7 @@ description: 从网络搜索、下载、验证并规范化存储上市公司财�
 
 ### 2. PDF下载与验证
 - 下载PDF文件到临时位置
-- 使用pdfplumber提取第一页文本进行验证
+- 使用pdf_helper兼容层（支持PyMuPDF/pypdf/pdfminer.six）提取第一页文本进行验证
 - 验证标准：第一页包含公司名称和报告类型关键词
 - 排除补充报告、业绩公告、错误文件
 
@@ -55,7 +55,7 @@ description: 从网络搜索、下载、验证并规范化存储上市公司财�
 3. 记录下载来源URL
 
 ### 第4步：文件验证
-1. 使用pdfplumber提取第一页文本
+1. 使用pdf_helper兼容层提取第一页文本
 2. 验证公司名称匹配（支持中文、英文、繁体变体）
 3. 验证报告类型匹配（"年报"/"年度报告"/"Annual Report"/"全年業績"或"中报"/"中期报告"/"Interim Report"/"中期業績"）
 4. 验证通过的文件继续处理，失败的文件记录原因
@@ -85,11 +85,11 @@ description: 从网络搜索、下载、验证并规范化存储上市公司财�
 主脚本：[download_financial_reports.py](scripts/download_financial_reports.py)
 
 ```bash
-# 基本用法
-python3 download_financial_reports.py --company "海尔智家" --code "600690" --year 2024 --report-type "年报"
+# 基本用法（必须用项目 venv）
+.venv/bin/python .claude/skills/financial-report-downloader/scripts/download_financial_reports.py --company "海尔智家" --code "600690" --year 2024 --report-type "年报"
 
 # 下载多个报告
-python3 download_financial_reports.py --company "安贤园中国" --code "00922" --years 2024,2025 --report-types "年报,中报"
+.venv/bin/python .claude/skills/financial-report-downloader/scripts/download_financial_reports.py --company "安贤园中国" --code "00922" --years 2024,2025 --report-types "年报,中报"
 ```
 
 ### 验证脚本
@@ -97,10 +97,10 @@ python3 download_financial_reports.py --company "安贤园中国" --code "00922"
 
 ```bash
 # 验证单个PDF文件
-python3 verify_pdf.py --file "海尔智家_2024_年报.pdf" --company "海尔智家" --report-type "年报"
+.venv/bin/python .claude/skills/financial-report-downloader/scripts/verify_pdf.py --file "海尔智家_2024_年报.pdf" --company "海尔智家" --report-type "年报"
 
 # 批量验证目录
-python3 verify_pdf.py --dir "company_analysis/" --report
+.venv/bin/python .claude/skills/financial-report-downloader/scripts/verify_pdf.py --dir "company_analysis/" --report
 ```
 
 ## 详细工作流程
@@ -134,9 +134,8 @@ python3 verify_pdf.py --dir "company_analysis/" --report
 - **verify_pdf.py**：PDF验证脚本，独立使用或集成使用
 - **search_companies.py**：公司信息搜索脚本，辅助定位财报来源
 
-### 辅助脚本
-- **create_directory_structure.py**：创建规范化目录结构
-- **generate_report_log.py**：生成下载报告和校验日志
+### 辅助模块
+- **pdf_helper.py**：PDF 兼容层，封装 PyMuPDF/pypdf/pdfminer.six，提供 `open_pdf()` 统一 API。两个 skill（extractor 和 downloader）各有一份相同副本
 
 ## 目录结构规范
 
@@ -162,12 +161,10 @@ company_analysis/
 
 如遇问题，请参考：
 1. [workflow.md](references/workflow.md)中的故障排除章节
-2. 检查网络连接和Python库依赖（pdfplumber、requests等）
+2. 检查网络连接和 Python 库依赖（PyMuPDF 或 pypdf、requests 等，必须用项目 `.venv/bin/python`）
 3. 查看详细错误日志定位问题原因
 
 ---
 
-**技能创建时间**：2026年2月22日  
-**基于任务**：海尔智家（600690）和安贤园中国（00922）财报下载任务  
-**适用市场**：A股（沪深交易所）、港股（香港交易所）  
+**适用市场**：A 股（沪深交易所）、港股（香港交易所）  
 **支持报告类型**：年度报告、中期报告（半年度报告）
