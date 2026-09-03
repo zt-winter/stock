@@ -82,6 +82,18 @@ def get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
             PRIMARY KEY (stock_code, date)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hk_yield_cache (
+            stock_code     TEXT NOT NULL,
+            date           TEXT NOT NULL,
+            price          REAL,
+            dividend_yield REAL,
+            buyback_yield  REAL,
+            total_yield    REAL,
+            updated_at     TEXT NOT NULL,
+            PRIMARY KEY (stock_code, date)
+        )
+    """)
     conn.commit()
     return conn
 
@@ -132,6 +144,66 @@ def _save_valuation_cache(data_map, date=None, conn=None):
     if own_conn:
         conn.close()
     print(f"[缓存] 已写入 {len(data_map)} 只股票估值数据 (date={date})")
+
+
+def _find_raw_code(data_map, code_5):
+    """在 data_map 中查找与 5 位标准化代码对应的原始 key"""
+    for c in data_map.keys():
+        if str(c).strip().zfill(5) == str(code_5).zfill(5):
+            return c
+    return None
+
+
+def _read_hk_yield_cache(stock_codes, date=None, conn=None):
+    """从本地缓存读取港股股东回报数据（股息+回购+合计）"""
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    placeholders = ",".join("?" * len(stock_codes))
+    sql = f"""
+        SELECT stock_code, price, dividend_yield, buyback_yield, total_yield
+        FROM hk_yield_cache
+        WHERE stock_code IN ({placeholders}) AND date = ?
+    """
+    rows = conn.execute(sql, list(stock_codes) + [date]).fetchall()
+    if own_conn:
+        conn.close()
+    return {
+        r[0]: {"price": r[1], "dy": r[2], "by": r[3], "total": r[4]}
+        for r in rows if r[2] is not None or r[3] is not None
+    }
+
+
+def _save_hk_yield_cache(data_map, date=None, conn=None):
+    """批量写入港股股东回报数据到本地缓存（code 用 5 位零填充）"""
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    rows = []
+    for code, v in data_map.items():
+        code_5 = str(code).strip().zfill(5)
+        dy = v.get("dy")
+        by = v.get("by")
+        total = v.get("total")
+        if dy is None and by is None:
+            continue
+        rows.append((code_5, date, v.get("price"), dy, by, total, now))
+    if rows:
+        conn.executemany(
+            """INSERT OR REPLACE INTO hk_yield_cache
+               (stock_code, date, price, dividend_yield, buyback_yield, total_yield, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        conn.commit()
+        print(f"[港股缓存] 已写入 {len(rows)} 只港股股东回报数据 (date={date})")
+    if own_conn:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +546,7 @@ def _get_prices_tencent(stock_codes):
                     if len(parts) >= 47:
                         raw_code = parts[2].strip()
                         is_hk = line.startswith("v_hk")
-                        info = {"price": None, "pe": None, "pb": None}
+                        info = {"price": None, "pe": None, "pb": None, "shares": None, "mktcap": None}
                         try:
                             p = float(parts[3])
                             if p > 0: info["price"] = p
@@ -484,10 +556,20 @@ def _get_prices_tencent(stock_codes):
                             if pe != 0: info["pe"] = pe  # 允许负PE（亏损股）
                         except (ValueError, IndexError): pass
                         try:
-                            # 港股PB在[47]（[46]是英文ticker）；A股PB在[46]
-                            pb_idx = 47 if is_hk and len(parts) > 47 else 46
+                            # A股PB在[46]；港股[46]为英文ticker、[47]为TTM股息率、[58]才是市净率
+                            pb_idx = 58 if is_hk and len(parts) > 58 else 46
                             pb = float(parts[pb_idx])
                             if pb > 0: info["pb"] = pb
+                        except (ValueError, IndexError): pass
+                        try:
+                            # 港股总市值[45](亿HKD)与总股本[69]，用于计算回购收益率
+                            if is_hk and len(parts) > 69:
+                                mcap_yi = float(parts[45])
+                                if mcap_yi > 0:
+                                    info["mktcap"] = mcap_yi * 1e8  # 转HKD
+                                shares = float(parts[69])
+                                if shares > 0:
+                                    info["shares"] = shares
                         except (ValueError, IndexError): pass
                         if info["price"] is not None:
                             orig = norm_to_orig.get(raw_code, raw_code)
@@ -731,6 +813,110 @@ def _get_hk_dividend_yield_em(hk_codes, existing_map):
     return dy_map
 
 
+def _get_hk_buyback_yield_em(hk_codes, existing_map):
+    """通过东方财富 datacenter RPT_HK_BUYBACK 获取港股近365天场内回购数据，计算回购收益率。
+
+    港股公司多以场内回购替代现金分红。港交所历史上要求购回股份须注销；
+    2024-06-11 起废除该要求，公司可注销或留作库存股（依注册地法律与章程）。
+    无论注销/库存，回购现金均流出公司返还股东，近似视作等效股息：
+        回购收益率(%) = TTM回购金额(HKD) / 总市值(HKD) × 100
+    注：RPT_HK_BUYBACK 数据不区分注销与库存。
+
+    返回: {code: {"by": 回购收益率%|None}}
+    """
+    target_codes = set(str(c).strip() for c in hk_codes)
+    if not target_codes:
+        return {}
+    already = {c for c, v in existing_map.items()
+               if v.get("by") is not None and v.get("by") >= 0}
+    target_codes -= {str(c).strip() for c in already}
+    if not target_codes:
+        print("[港股回购] 缓存完整，跳过网络请求")
+        return {}
+
+    print(f"[港股回购] 需获取 {len(target_codes)} 只港股TTM回购数据...")
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    session = requests.Session()
+    session.headers.update(headers)
+    today = datetime.now()
+    cutoff = (today - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+
+    # 组装多代码 + 日期过滤，分页拉取
+    code_list = sorted(target_codes)
+    buyback_map = defaultdict(float)
+    chunk_size = 20
+    for i in range(0, len(code_list), chunk_size):
+        chunk = code_list[i:i + chunk_size]
+        in_vals = ",".join(f'"{c.zfill(5)}.HK"' for c in chunk)
+        date_filter = f"(TRADE_DATE>='{cutoff}')"
+        code_filter = f"(SECUCODE in ({in_vals}))"
+        page, max_pages = 1, 50
+        while page <= max_pages:
+            url = (
+                "https://datacenter-web.eastmoney.com/api/data/v1/get?"
+                "reportName=RPT_HK_BUYBACK"
+                "&columns=SECUCODE,TRADE_DATE,REPO_AMT,CURRENCY"
+                f"&sortColumns=TRADE_DATE&sortTypes=-1"
+                f"&pageSize=100&pageNumber={page}"
+                f"&filter={code_filter}{date_filter}&source=WEB&client=PC"
+            )
+            data = None
+            for attempt in range(3):
+                try:
+                    resp = session.get(url, timeout=20)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        time.sleep(3)
+            if data is None:
+                break
+            items = (data.get("result") or {}).get("data") or []
+            if not items:
+                break
+            for item in items:
+                secucode = str(item.get("SECUCODE", ""))
+                code = secucode.split(".")[0].lstrip("0")
+                code = code.zfill(5)
+                if code.zfill(5) not in {c.zfill(5) for c in chunk}:
+                    continue
+                try:
+                    amt = float(item.get("REPO_AMT") or 0)
+                except (TypeError, ValueError):
+                    amt = 0.0
+                ccy = str(item.get("CURRENCY") or "HKD").upper()
+                if ccy == "CNY":
+                    amt *= _FX_CNY_HKD
+                elif ccy == "USD":
+                    amt *= _FX_USD_HKD
+                buyback_map[code.zfill(5)] += amt
+            total_count = (data.get("result") or {}).get("count", 0)
+            if len(items) < 100 or page * 100 >= total_count:
+                break
+            page += 1
+            time.sleep(0.5)
+    session.close()
+
+    # 转回购收益率
+    by_map = {}
+    by_count = 0
+    for code in code_list:
+        code_5 = code.zfill(5)
+        amt = buyback_map.get(code_5, 0.0)
+        if amt <= 0:
+            by_map[code] = {"by": 0.0}
+            continue
+        mktcap = existing_map.get(code, {}).get("mktcap")
+        if mktcap and mktcap > 0:
+            by_map[code] = {"by": round(amt / mktcap * 100, 4)}
+            by_count += 1
+        else:
+            by_map[code] = {"by": None}
+    print(f"[港股回购] 成功计算 {by_count}/{len(code_list)} 只港股回购收益率")
+    return by_map
+
+
 # ---------------------------------------------------------------------------
 # 批量获取行情（价格 + PE + PB + 股息率）
 # ---------------------------------------------------------------------------
@@ -778,16 +964,52 @@ def get_batch_data(stock_codes, market_map=None):
             if code in data_map:
                 data_map[code]["dy"] = dy_info.get("dy")
 
-    # 港股: 调用东方财富 EM 接口获取TTM股息率
+    # 港股: 现金股息(TTM) + 场内回购(TTM)，回购现金(注销或库存)等效计入股东回报
     hk_codes = [
         c for c in data_map.keys()
         if market_map.get(str(c).strip(), "") == "hk"
     ]
     if hk_codes:
-        hk_dy_map = _get_hk_dividend_yield_em(hk_codes, data_map)
-        for code, dy_info in hk_dy_map.items():
-            if code in data_map:
-                data_map[code]["dy"] = dy_info.get("dy")
+        hk_codes_5 = sorted({str(c).strip().zfill(5) for c in hk_codes})
+        hk_cached = _read_hk_yield_cache(hk_codes_5, date=today)
+        for c5, v in hk_cached.items():
+            raw = _find_raw_code(data_map, c5)
+            if raw is not None:
+                data_map[raw]["dy"] = v.get("dy")
+                data_map[raw]["by"] = v.get("by")
+                data_map[raw]["total"] = v.get("total")
+
+        # 只需在股息与回购均缺失时才联网；无现金股息(但回购已取到)属正常结果不重复抓取
+        need_net = [c for c in hk_codes
+                    if data_map[c].get("dy") is None and data_map[c].get("by") is None]
+        if need_net:
+            hk_dy_map = _get_hk_dividend_yield_em(need_net, data_map)
+            for code, dy_info in hk_dy_map.items():
+                if code in data_map:
+                    data_map[code]["dy"] = dy_info.get("dy")
+            hk_by_map = _get_hk_buyback_yield_em(need_net, data_map)
+            for code, by_info in hk_by_map.items():
+                if code in data_map:
+                    data_map[code]["by"] = by_info.get("by")
+
+        # 计算股东总回报率 = 现金股息率 + 回购收益率，并写缓存
+        hk_save = {}
+        for code in hk_codes:
+            dy = data_map[code].get("dy")
+            by = data_map[code].get("by")
+            total = None
+            if dy is not None and by is not None:
+                total = round(dy + by, 4)
+            elif dy is not None:
+                total = round(dy, 4)
+            elif by is not None:
+                total = round(by, 4)
+            data_map[code]["total"] = total
+            hk_save[str(code).strip().zfill(5)] = {
+                "price": data_map[code].get("price"),
+                "dy": dy, "by": by, "total": total,
+            }
+        _save_hk_yield_cache(hk_save, date=today)
 
     # 仅缓存A股估值数据
     a_share_data = {
@@ -795,6 +1017,9 @@ def get_batch_data(stock_codes, market_map=None):
         if market_map.get(str(c).strip(), "") != "hk"
     }
     if a_share_data:
+        for code, v in a_share_data.items():
+            v.setdefault("by", None)
+            v["total"] = v.get("dy")
         _save_valuation_cache(a_share_data, date=today)
     return data_map
 
@@ -860,6 +1085,18 @@ def _calc_etf_pe_pb(stock_df):
             result["加权股息率(%)"] = round(weighted_dy, 2)
             result["股息率覆盖率"] = f"{len(dy_valid)}/{len(valid)}"
 
+    # 港股回购收益率（含注销/库存，数据不分，等效股东回报）
+    for col, key in (("回购收益率(%)", "加权回购收益率(%)"), ("股东总回报率(%)", "加权股东总回报率(%)")):
+        if col not in valid.columns:
+            continue
+        sub = valid[valid[col].notna() & (valid[col] > 0)].copy()
+        if sub.empty:
+            continue
+        w = sub["占比(%)"].sum()
+        weighted = (sub["占比(%)"] * sub[col]).sum() / w if w > 0 else 0
+        result[key] = round(weighted, 2)
+        result[f"{key}覆盖率"] = f"{len(sub)}/{len(valid)}"
+
     return result
 
 
@@ -883,6 +1120,7 @@ def calc_etf_valuation(fund_code, market=None, date=None):
     stock_codes = [str(row["证券代码"]).strip() for _, row in stock_df.iterrows()]
 
     # 检测成份股市场类型（港股/A股），用于行情查询和股息率处理
+    # 说明：上交所跨市场ETF的申赎清单无「市场」列，需按代码长度推断（A股恒为6位，港股≤5位）
     market_map = {}
     if "市场" in stock_df.columns:
         for _, row in stock_df.iterrows():
@@ -896,8 +1134,19 @@ def calc_etf_valuation(fund_code, market=None, date=None):
                 market_map[code] = "sz"
             elif "上海" in mkt:
                 market_map[code] = "sh"
+    for _, row in stock_df.iterrows():
+        code = str(row["证券代码"]).strip()
+        if code in market_map:
+            continue
+        if len(code) <= 5:
+            market_map[code] = "hk"
+            market_map[code.zfill(5)] = "hk"
+        elif code.startswith(("6", "9")):
+            market_map[code] = "sh"
+        else:
+            market_map[code] = "sz"
     hk_count = sum(1 for _, row in stock_df.iterrows()
-                   if "香港" in str(row.get("市场", "")) or "hk" in str(row.get("市场", "")).lower())
+                   if market_map.get(str(row["证券代码"]).strip()) == "hk")
     if hk_count > 0:
         print(f"  检测到 {hk_count} 只港股成份股，将使用腾讯港股行情接口")
 
@@ -907,6 +1156,7 @@ def calc_etf_valuation(fund_code, market=None, date=None):
         return basic_info, pd.DataFrame(), {}
 
     close_prices, pe_list, pb_list, dy_list = [], [], [], []
+    by_list, total_list = [], []
     matched = 0
     for _, row in stock_df.iterrows():
         code = str(row["证券代码"]).strip()
@@ -918,6 +1168,8 @@ def calc_etf_valuation(fund_code, market=None, date=None):
         pe_list.append(info.get("pe"))
         pb_list.append(info.get("pb"))
         dy_list.append(info.get("dy"))
+        by_list.append(info.get("by"))
+        total_list.append(info.get("total"))
         if info.get("price") is not None:
             matched += 1
     print(f"成功匹配 {matched}/{len(stock_df)} 只成份股行情")
@@ -926,6 +1178,8 @@ def calc_etf_valuation(fund_code, market=None, date=None):
     stock_df["PE"] = pe_list
     stock_df["PB"] = pb_list
     stock_df["股息率(%)"] = dy_list
+    stock_df["回购收益率(%)"] = by_list
+    stock_df["股东总回报率(%)"] = total_list
 
     stock_df["数量"] = pd.to_numeric(stock_df["数量"].astype(str).str.replace(",", "", regex=False), errors="coerce")
     stock_df["市值"] = stock_df["数量"] * stock_df["收盘价"]
@@ -1007,10 +1261,10 @@ def cmd_valuation(args):
         print(f"\n{'=' * 70}")
         print(f"成份股占比明细 (共 {len(stock_df)} 只)")
         print(f"{'=' * 70}")
-        display_cols = ["证券代码", "证券名称", "数量", "收盘价", "PE", "PB", "股息率(%)", "市值", "占比(%)"]
+        display_cols = ["证券代码", "证券名称", "数量", "收盘价", "PE", "PB", "股息率(%)", "回购收益率(%)", "股东总回报率(%)", "市值", "占比(%)"]
         available_cols = [c for c in display_cols if c in stock_df.columns]
         pd.set_option("display.max_columns", None)
-        pd.set_option("display.width", 140)
+        pd.set_option("display.width", 160)
         pd.set_option("display.float_format", lambda x: f"{x:.4f}")
         print(stock_df[available_cols].head(args.max_rows).to_string(index=False))
         if len(stock_df) > args.max_rows:
@@ -1021,6 +1275,8 @@ def cmd_valuation(args):
             pe_str = f"PE:{row['PE']:.1f}" if pd.notna(row.get('PE')) and row.get('PE', 0) > 0 else "PE:-"
             pb_str = f"PB:{row['PB']:.2f}" if pd.notna(row.get('PB')) and row.get('PB', 0) > 0 else "PB:-"
             dy_str = f"股息:{row['股息率(%)']:.2f}%" if pd.notna(row.get('股息率(%)')) and row.get('股息率(%)', 0) > 0 else "股息:-"
+            if pd.notna(row.get('股东总回报率(%)')) and row.get('股东总回报率(%)', 0) > 0:
+                dy_str += f"  总回报:{row['股东总回报率(%)']:.2f}%"
             print(f"  {row['证券代码']} {row['证券名称']:<8s}  "
                   f"占比: {row['占比(%)']:.2f}%  收盘价: {row['收盘价']:.2f}  "
                   f"{pe_str}  {pb_str}  {dy_str}")

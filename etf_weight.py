@@ -415,8 +415,8 @@ def _get_prices_tencent(stock_codes):
                         except (ValueError, IndexError):
                             pass
                         try:
-                            # 港股PB在[47]（[46]是英文ticker）；A股PB在[46]
-                            pb_idx = 47 if is_hk and len(parts) > 47 else 46
+                            # A股PB在[46]；港股[46]为英文ticker、[47]为TTM股息率、[58]才是市净率
+                            pb_idx = 58 if is_hk and len(parts) > 58 else 46
                             pb = float(parts[pb_idx])
                             if pb > 0:
                                 info["pb"] = pb
