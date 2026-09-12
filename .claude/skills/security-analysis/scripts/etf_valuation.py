@@ -31,7 +31,7 @@ import sqlite3
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import akshare as ak
@@ -63,6 +63,89 @@ _DC_INTERVAL = 1.0
 
 
 # ---------------------------------------------------------------------------
+# 交易日解析
+# ---------------------------------------------------------------------------
+
+# 各市场用于判定交易日的指数（腾讯行情代码）。A股沪深两市共用上证指数日历。
+_TD_INDEX_SYMBOL = {"sh": "sh000001", "sz": "sh000001", "hk": "hkHSI"}
+_TD_CALENDAR_DAYS = 60          # 单次拉取的交易日条数（用于向前回退）
+_TD_CACHE = {}                  # market -> [YYYY-MM-DD, ...] 升序
+
+
+def _fetch_trading_dates(market, count=_TD_CALENDAR_DAYS):
+    """拉取指定市场最近 count 个交易日（升序）。失败返回空列表。"""
+    sym = _TD_INDEX_SYMBOL.get(market)
+    if not sym:
+        return []
+    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+           f"?param={sym},day,,,{count},qfq")
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            node = (resp.json().get("data") or {}).get(sym) or {}
+            bars = node.get("day") or node.get("qfqday") or []
+            dates = sorted({str(b[0])[:10] for b in bars if b and b[0]})
+            if dates:
+                return dates
+        except Exception:
+            if attempt < 2:
+                time.sleep(2)
+    return []
+
+
+def _market_calendar(market):
+    """取指定市场的交易日历（进程内缓存），接口不可用时返回空列表。"""
+    if market not in _TD_CACHE:
+        _TD_CACHE[market] = _fetch_trading_dates(market)
+    return _TD_CACHE[market]
+
+
+def _prev_weekday(date_str):
+    """向前退一个工作日（周一~周五）。仅在交易日历不可用时兜底，不含节假日。"""
+    d = datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
+
+
+def _norm_date(date_str):
+    """把 YYYY-MM-DD / YYYYMMDD / YYYY/MM/DD 统一为 YYYY-MM-DD。"""
+    s = str(date_str).strip()[:10].replace("/", "-")
+    if "-" not in s and len(s) == 8:
+        s = f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return s
+
+
+def _parse_ref_date(ref_date):
+    """把日期字符串解析为 datetime；None 时返回当前自然日。"""
+    if ref_date:
+        try:
+            return datetime.strptime(_norm_date(ref_date), "%Y-%m-%d")
+        except ValueError:
+            pass
+    return datetime.now()
+
+
+def last_trading_day(market, ref_date=None):
+    """返回指定市场在 ref_date（含）当日或之前的最近一个交易日。
+
+    自然日若本身不是交易日（周末/节假日），自动回退到该市场的上一交易日。
+    market: 'sh' / 'sz' -> A股日历；'hk' -> 港股日历。两市场日历相互独立，
+    因此A股与港股交易日不一致时，各自取各自市场的上一交易日。
+    日历接口不可用时按周一~周五兜底。
+    """
+    ref = _norm_date(ref_date) if ref_date else datetime.now().strftime("%Y-%m-%d")
+    cal = _market_calendar(market)
+    if cal:
+        eligible = [d for d in cal if d <= ref]
+        if eligible:
+            return eligible[-1]
+    return _prev_weekday(ref)
+
+
+# ---------------------------------------------------------------------------
 # 数据库工具
 # ---------------------------------------------------------------------------
 
@@ -90,10 +173,15 @@ def get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
             dividend_yield REAL,
             buyback_yield  REAL,
             total_yield    REAL,
+            note           TEXT,
             updated_at     TEXT NOT NULL,
             PRIMARY KEY (stock_code, date)
         )
     """)
+    # 老库补 note 列（CREATE TABLE IF NOT EXISTS 不会给已存在的表加列）
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(hk_yield_cache)")}
+    if "note" not in cols:
+        conn.execute("ALTER TABLE hk_yield_cache ADD COLUMN note TEXT")
     conn.commit()
     return conn
 
@@ -163,7 +251,7 @@ def _read_hk_yield_cache(stock_codes, date=None, conn=None):
         conn = get_conn()
     placeholders = ",".join("?" * len(stock_codes))
     sql = f"""
-        SELECT stock_code, price, dividend_yield, buyback_yield, total_yield
+        SELECT stock_code, price, dividend_yield, buyback_yield, total_yield, note
         FROM hk_yield_cache
         WHERE stock_code IN ({placeholders}) AND date = ?
     """
@@ -171,7 +259,7 @@ def _read_hk_yield_cache(stock_codes, date=None, conn=None):
     if own_conn:
         conn.close()
     return {
-        r[0]: {"price": r[1], "dy": r[2], "by": r[3], "total": r[4]}
+        r[0]: {"price": r[1], "dy": r[2], "by": r[3], "total": r[4], "note": r[5]}
         for r in rows if r[2] is not None or r[3] is not None
     }
 
@@ -192,12 +280,14 @@ def _save_hk_yield_cache(data_map, date=None, conn=None):
         total = v.get("total")
         if dy is None and by is None:
             continue
-        rows.append((code_5, date, v.get("price"), dy, by, total, now))
+        rows.append((code_5, date, v.get("price"), dy, by, total,
+                     v.get("note"), now))
     if rows:
         conn.executemany(
             """INSERT OR REPLACE INTO hk_yield_cache
-               (stock_code, date, price, dividend_yield, buyback_yield, total_yield, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (stock_code, date, price, dividend_yield, buyback_yield, total_yield,
+                note, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         conn.commit()
@@ -351,9 +441,11 @@ SZSE_PCF_BASE_URL = "https://reportdocs.static.szse.cn/files/text/etf/"
 
 
 def query_szse_etf_list(fund_code="", date=None):
-    """查询深交所ETF申赎清单列表"""
+    """查询深交所ETF申赎清单列表（默认查A股最近交易日）"""
     if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
+        date = last_trading_day("sh")
+    else:
+        date = _norm_date(date)
     url = "https://www.szse.cn/api/report/ShowReport/data"
     params = {
         "SHOWTYPE": "JSON", "CATALOGID": "sgshqd", "loading": "first",
@@ -391,25 +483,52 @@ def query_szse_etf_list(fund_code="", date=None):
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
+def _szse_pcf_candidates(date=None, max_fallback=5):
+    """生成深交所PCF的候选日期（降序，YYYYMMDD）。
+
+    未指定 date 时以 A股最近交易日为起点；非交易日/未发布时沿交易日历向前回退。
+    交易日历不可用时按工作日回退。
+    """
+    anchor = _norm_date(date) if date else last_trading_day("sh")
+    cal = _market_calendar("sh")
+    if cal:
+        prior = [d for d in cal if d <= anchor]
+        if prior:
+            return [d.replace("-", "") for d in reversed(prior[-max_fallback:])]
+    out, cur = [], anchor
+    while len(out) < max_fallback:
+        out.append(cur.replace("-", ""))
+        cur = _prev_weekday(cur)
+    return out
+
+
 def download_szse_pcf(fund_code, date=None):
-    """下载并解析深交所ETF申赎清单PCF文本文件"""
-    if date is None:
-        date = datetime.now().strftime("%Y%m%d")
-    else:
-        date = date.replace("-", "")
-    pcf_url = f"{SZSE_PCF_BASE_URL}ETF{fund_code}{date}.txt"
+    """下载并解析深交所ETF申赎清单PCF文本文件。
+
+    深交所PCF按「交易日+日期」命名，非交易日无文件（HTTP 404）。因此失败时
+    沿交易日历向前回退，最多尝试 5 个交易日；显式传入 date 时同样带此回退。
+    """
+    candidates = _szse_pcf_candidates(date)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "https://www.szse.cn/disclosure/fund/currency/index.html",
     }
-    try:
-        resp = requests.get(pcf_url, headers=headers, timeout=15)
-        resp.raise_for_status()
-        text = resp.content.decode("gbk", errors="replace")
-    except requests.RequestException as e:
-        print(f"[深交所] 下载PCF文件失败 ({pcf_url}): {e}")
-        return None, pd.DataFrame()
-    return _parse_szse_pcf_text(text)
+    for pcf_date in candidates:
+        pcf_url = f"{SZSE_PCF_BASE_URL}ETF{fund_code}{pcf_date}.txt"
+        try:
+            resp = requests.get(pcf_url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            text = resp.content.decode("gbk", errors="replace")
+        except requests.RequestException:
+            continue
+        info, stock_df = _parse_szse_pcf_text(text)
+        if stock_df.empty:
+            continue
+        if pcf_date != candidates[0]:
+            print(f"[深交所] {candidates[0]} 无PCF文件，已回退至 {pcf_date}")
+        return info, stock_df
+    print(f"[深交所] 下载PCF文件失败（已尝试 {'、'.join(candidates)}，均无有效文件）")
+    return None, pd.DataFrame()
 
 
 def _parse_szse_pcf_text(text):
@@ -630,8 +749,12 @@ def _get_prices_eastmoney(stock_codes):
 # 东方财富 datacenter-web 批量获取TTM股息率
 # ---------------------------------------------------------------------------
 
-def _get_dividend_yield_datacenter(stock_codes, existing_map):
-    """通过东方财富 datacenter-web 接口获取分红记录，计算TTM股息率"""
+def _get_dividend_yield_datacenter(stock_codes, existing_map, ref_date=None):
+    """通过东方财富 datacenter-web 接口获取分红记录，计算TTM股息率
+
+    除净日须落在 [ref_date-365, ref_date] 闭区间内：已宣派但尚未除净的分红不计入。
+    ref_date 默认为A股最近交易日。
+    """
     target_codes = set(str(c).strip() for c in stock_codes)
     target_codes -= {c for c, v in existing_map.items() if v.get("dy") is not None and v.get("dy") >= 0}
     if not target_codes:
@@ -645,7 +768,7 @@ def _get_dividend_yield_datacenter(stock_codes, existing_map):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     session = requests.Session()
     session.headers.update(headers)
-    today = datetime.now()
+    ref = _parse_ref_date(ref_date)
     dividend_map = defaultdict(float)
     page, max_pages = 1, 20
 
@@ -681,10 +804,13 @@ def _get_dividend_yield_datacenter(stock_codes, existing_map):
             try:
                 ex_date = datetime.strptime(ex_date_str[:10], "%Y-%m-%d")
             except (ValueError, TypeError): continue
-            if (today - ex_date).days <= 365:
-                dividend_map[code] += float(bonus)
-            else:
+            days = (ref - ex_date).days
+            if days > 365:
+                # 记录按除净日倒序返回，越界后其后记录只会更旧
                 stop_paging = True
+            elif days >= 0:
+                dividend_map[code] += float(bonus)
+            # days < 0: 已宣派未除净，跳过；不可终止分页（后续记录仍可能有效）
         total_count = (data.get("result") or {}).get("count", 0)
         if stop_paging or len(items) < _DC_PAGE_SIZE or page * _DC_PAGE_SIZE >= total_count: break
         page += 1
@@ -744,10 +870,103 @@ def _parse_hk_dividend_hkd(fhfa):
     return None
 
 
-def _get_hk_dividend_yield_em(hk_codes, existing_map):
-    """通过东方财富 EM CoreReading 接口获取港股分红记录，计算TTM股息率。
+_HK_DIV_DC_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+# 主源与备用源都取不到该股分红记录时的说明（区别于「确认窗口内无分红」）
+_NOTE_NO_DIVIDEND_DATA = "两源均无分红记录，股息率按0计（或存在低估）"
 
-    接口返回最近3条分红记录（覆盖最新年度分红），按除净日过滤365天内记录求和。
+
+def _sum_hk_ttm_dividend(records, ref):
+    """汇总 [ref-365, ref] 窗口内的每股港币股息（TTM）。
+
+    两个数据源共用本函数，确保口径完全一致。
+
+    参数:
+        records: 可迭代的 (除净日字符串 "YYYY/MM/DD", 分红方案文本)
+        ref:     datetime，统计基准日
+    口径要点:
+      - 除净日须落在 [ref-365, ref] 闭区间内。已宣派但尚未除净（除净日晚于 ref）
+        以及超出窗口的记录一律不计。
+      - 同一 (除净日, 方案原文) 只计一次。东财两个源都会把同一笔分红重复返回
+        （如「年度分配」与「特别分配」两行除净日、公告日、金额全同），
+        不去重会导致股息率翻倍。
+    """
+    seen = set()
+    total = 0.0
+    for date_str, plan in records:
+        key = (str(date_str)[:10], plan)
+        if key in seen:
+            continue
+        try:
+            ex_date = datetime.strptime(str(date_str)[:10], "%Y/%m/%d")
+        except (ValueError, TypeError):
+            continue
+        days = (ref - ex_date).days
+        if not (0 <= days <= 365):
+            continue
+        seen.add(key)
+        amt = _parse_hk_dividend_hkd(plan)
+        if amt:
+            total += amt
+    return total
+
+
+def _fetch_hk_dividend_primary(session, code_5):
+    """主源：东方财富 EM CoreReading。返回 (是否有记录, [(除净日, 方案)])。
+
+    该接口只返回最近约3条分红记录（可能漏掉窗口内的更早一笔，属已知少算）。
+    无 fhpx 字段表示该股在此接口无数据（如次新股），不代表无分红。
+    """
+    url = (f"https://emweb.securities.eastmoney.com/"
+           f"PC_HKF10/CoreReading/PageAjax?code={code_5}")
+    fhpx = session.get(url, timeout=15).json().get("fhpx", [])
+    if not fhpx:
+        return False, []
+    return True, [(str(it.get("pxr", ""))[:10], it.get("fhfa", "")) for it in fhpx]
+
+
+def _fetch_hk_dividend_backup(session, code_5):
+    """备用源：东方财富 datacenter RPT_HKF10_MAIN_DIVBASIC。返回 (是否成功, [(除净日, 方案)])。
+
+    仅在主源无数据时调用，且**不与主源结果合并**——两源覆盖同一批分红，
+    合并必然重复计数，故只作整体替换。
+    口径要点:
+      - 必须过滤 IS_BFP="0"（真实分红方案）。IS_BFP="1" 是「未派发或宣派股息」
+        占位行，其 EX_DIVIDEND_DATE 为空，在降序排序里排在最前，会把真实分红
+        挤出首页分页，导致静默少算。
+      - 365天窗口一律在本地过滤，不用接口的日期条件：实测 (EX_DIVIDEND_DATE>=...)
+        会连窗口边界内的记录一起滤掉，反而引入少算。
+      - 接口对无效代码返回 200 + 空结果，故须校验返回行的代码归属，不能只看状态码。
+    """
+    params = {
+        "reportName": "RPT_HKF10_MAIN_DIVBASIC",
+        "columns": "SECURITY_CODE,EX_DIVIDEND_DATE,PLAN_EXPLAIN",
+        "filter": f'(SECUCODE="{code_5}.HK")(IS_BFP="0")',
+        "pageNumber": 1, "pageSize": 100,
+        "sortColumns": "EX_DIVIDEND_DATE", "sortTypes": -1,
+        "source": "F10", "client": "PC",
+    }
+    rows = (session.get(_HK_DIV_DC_URL, params=params, timeout=15).json()
+            .get("result") or {}).get("data") or []
+    for r in rows:
+        if str(r.get("SECURITY_CODE", "")).strip() != code_5:
+            return False, []
+    return True, [(str(r.get("EX_DIVIDEND_DATE") or "")[:10],
+                   r.get("PLAN_EXPLAIN") or "") for r in rows]
+
+
+def _get_hk_dividend_yield_em(hk_codes, existing_map, ref_date=None):
+    """获取港股分红记录，计算TTM股息率。
+
+    主源为东方财富 EM CoreReading；主源无该股记录时（如新上市H股）回退到
+    datacenter RPT_HKF10_MAIN_DIVBASIC。**只做回退，不做合并**：主源有数据就
+    完全采用主源，避免两源对同一笔分红重复计数。宁可少算，不可多算。
+
+    口径要点：
+      - 除净日须落在 [ref_date-365, ref_date] 闭区间内。已宣派但尚未除净的分红
+        （除净日在 ref_date 之后）不计入 TTM。
+      - 同一 (除净日, 分红方案) 若被接口重复返回，只计一次，避免双计。
+      - ref_date 默认为港股最近交易日；返回 dy=None 表示两个源都取不到数据
+        （下次重试），dy=0.0 表示确认窗口内无分红（不再重试）。
     """
     target_codes = set(str(c).strip() for c in hk_codes)
     target_codes -= {c for c, v in existing_map.items()
@@ -763,57 +982,66 @@ def _get_hk_dividend_yield_em(hk_codes, existing_map):
     }
     session = requests.Session()
     session.headers.update(headers)
-    today = datetime.now()
-    dividend_map = {}  # code -> TTM HKD dividend per share
-    success_count = 0
+    ref = _parse_ref_date(ref_date)
+    dividend_map = {}  # code -> TTM HKD dividend per share(float) | None(抓取失败)
 
+    fallback_used = 0
+    note_map = {}
     for code in sorted(target_codes):
         code_5 = code.zfill(5)
-        url = (f"https://emweb.securities.eastmoney.com/"
-               f"PC_HKF10/CoreReading/PageAjax?code={code_5}")
         try:
-            resp = session.get(url, timeout=15)
-            data = resp.json()
-            fhpx = data.get("fhpx", [])
-            ttm_div = 0.0
-            for item in fhpx:
-                pxr = item.get("pxr", "")
-                if not pxr or pxr == "--":
-                    continue
-                try:
-                    ex_date = datetime.strptime(pxr[:10], "%Y/%m/%d")
-                except (ValueError, TypeError):
-                    continue
-                if (today - ex_date).days > 365:
-                    continue
-                amt = _parse_hk_dividend_hkd(item.get("fhfa", ""))
-                if amt:
-                    ttm_div += amt
-            dividend_map[code] = ttm_div
-            success_count += 1
+            has_rec, recs = _fetch_hk_dividend_primary(session, code_5)
         except Exception:
-            dividend_map[code] = None
+            has_rec, recs = False, []       # 网络异常等同主源无数据，转备用源
+        if has_rec:
+            dividend_map[code] = _sum_hk_ttm_dividend(recs, ref)
+        else:
+            # 主源无该股分红数据：整体改用备用源（不合并两源）。
+            try:
+                ok, recs = _fetch_hk_dividend_backup(session, code_5)
+            except Exception:
+                ok, recs = False, []
+            if ok and recs:
+                dividend_map[code] = _sum_hk_ttm_dividend(recs, ref)
+                fallback_used += 1
+            else:
+                # 两源皆无记录：无从判断分红，按0计（保守，进分母压低股息率），
+                # 但附说明以便区分于「确认无分红」。
+                dividend_map[code] = 0.0
+                note_map[code] = _NOTE_NO_DIVIDEND_DATA
         time.sleep(0.3)
     session.close()
+    if fallback_used:
+        print(f"[港股分红] 其中 {fallback_used} 只由备用源(datacenter)补全")
 
     dy_map = {}
     dy_count = 0
     for code, ttm_div in dividend_map.items():
-        if ttm_div is None or ttm_div <= 0:
-            dy_map[code] = {"dy": None}
+        note = note_map.get(code)
+        if ttm_div is None:
+            dy_map[code] = {"dy": None, "note": note}
+            continue
+        if ttm_div <= 0:
+            # note 非空表示「两源皆无记录，按0计」；note 为空才是确认无分红
+            dy_map[code] = {"dy": 0.0, "note": note}
             continue
         price = existing_map.get(code, {}).get("price")
         if price and price > 0:
-            dy_map[code] = {"dy": round(ttm_div / price * 100, 4)}
+            dy_map[code] = {"dy": round(ttm_div / price * 100, 4), "note": None}
             dy_count += 1
         else:
-            dy_map[code] = {"dy": None}
+            dy_map[code] = {"dy": None, "note": note}
 
-    print(f"[港股分红] 成功计算 {dy_count}/{len(target_codes)} 只港股TTM股息率")
+    zero_count = sum(1 for v in dy_map.values() if v.get("dy") == 0.0)
+    assumed = len(note_map)
+    unknown = sum(1 for v in dy_map.values()
+                  if v.get("dy") is None and not v.get("note"))
+    print(f"[港股分红] 成功计算 {dy_count} 只有分红 / {zero_count - assumed} 只确认无分红 / "
+          f"{assumed} 只无数据按0计 / {unknown} 只未知（共 {len(target_codes)} 只）")
     return dy_map
 
 
-def _get_hk_buyback_yield_em(hk_codes, existing_map):
+def _get_hk_buyback_yield_em(hk_codes, existing_map, ref_date=None):
     """通过东方财富 datacenter RPT_HK_BUYBACK 获取港股近365天场内回购数据，计算回购收益率。
 
     港股公司多以场内回购替代现金分红。港交所历史上要求购回股份须注销；
@@ -822,6 +1050,7 @@ def _get_hk_buyback_yield_em(hk_codes, existing_map):
         回购收益率(%) = TTM回购金额(HKD) / 总市值(HKD) × 100
     注：RPT_HK_BUYBACK 数据不区分注销与库存。
 
+    ref_date 默认为港股最近交易日，仅统计 [ref_date-365, ref_date] 区间内的回购。
     返回: {code: {"by": 回购收益率%|None}}
     """
     target_codes = set(str(c).strip() for c in hk_codes)
@@ -838,8 +1067,9 @@ def _get_hk_buyback_yield_em(hk_codes, existing_map):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     session = requests.Session()
     session.headers.update(headers)
-    today = datetime.now()
-    cutoff = (today - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+    ref = _parse_ref_date(ref_date)
+    cutoff = (ref - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+    ref_str = ref.strftime("%Y-%m-%d")
 
     # 组装多代码 + 日期过滤，分页拉取
     code_list = sorted(target_codes)
@@ -848,7 +1078,7 @@ def _get_hk_buyback_yield_em(hk_codes, existing_map):
     for i in range(0, len(code_list), chunk_size):
         chunk = code_list[i:i + chunk_size]
         in_vals = ",".join(f'"{c.zfill(5)}.HK"' for c in chunk)
-        date_filter = f"(TRADE_DATE>='{cutoff}')"
+        date_filter = f"(TRADE_DATE>='{cutoff}')(TRADE_DATE<='{ref_str} 23:59:59')"
         code_filter = f"(SECUCODE in ({in_vals}))"
         page, max_pages = 1, 50
         while page <= max_pages:
@@ -946,12 +1176,26 @@ def get_batch_data(stock_codes, market_map=None):
         c for c in data_map.keys()
         if market_map.get(str(c).strip(), "") != "hk"
     ]
-    today = datetime.now().strftime("%Y-%m-%d")
-    cached = _read_valuation_cache(a_share_data_keys, date=today) if a_share_data_keys else {}
+    # 缓存与TTM窗口按各市场交易日打标：自然日非交易日时取该市场上一交易日；
+    # A股与港股节假日不同，各取各自日历
+    hk_codes = [
+        c for c in data_map.keys()
+        if market_map.get(str(c).strip(), "") == "hk"
+    ]
+    a_trade_day = last_trading_day("sh")
+    hk_trade_day = last_trading_day("hk") if hk_codes else None
+    if hk_trade_day:
+        print(f"[交易日] A股={a_trade_day}  港股={hk_trade_day}")
+    else:
+        print(f"[交易日] A股={a_trade_day}")
+
+    # 注意：stock_valuation 仅缓存A股。命中数与分母都只统计A股成份股，
+    # 否则港股跨境ETF会恒显示「命中 0/N」，误判为缓存失效。
+    cached = _read_valuation_cache(a_share_data_keys, date=a_trade_day) if a_share_data_keys else {}
     for code, info in data_map.items():
         info["dy"] = cached.get(code, {}).get("dy")
-    cached_dy = sum(1 for v in data_map.values() if v.get("dy") is not None)
-    print(f"[缓存] 命中 {cached_dy}/{len(data_map)} 只股息率 (date={today})")
+    cached_dy = sum(1 for c in a_share_data_keys if data_map.get(c, {}).get("dy") is not None)
+    print(f"[缓存] A股股息率命中 {cached_dy}/{len(a_share_data_keys)} 只 (date={a_trade_day})")
 
     # A股: 调用 datacenter 获取TTM股息率
     a_share_codes = [
@@ -959,57 +1203,56 @@ def get_batch_data(stock_codes, market_map=None):
         if market_map.get(str(c).strip(), "") != "hk"
     ]
     if cached_dy < len(a_share_codes) * 0.8 and a_share_codes:
-        dy_map = _get_dividend_yield_datacenter(a_share_codes, data_map)
+        dy_map = _get_dividend_yield_datacenter(a_share_codes, data_map, ref_date=a_trade_day)
         for code, dy_info in dy_map.items():
             if code in data_map:
                 data_map[code]["dy"] = dy_info.get("dy")
 
     # 港股: 现金股息(TTM) + 场内回购(TTM)，回购现金(注销或库存)等效计入股东回报
-    hk_codes = [
-        c for c in data_map.keys()
-        if market_map.get(str(c).strip(), "") == "hk"
-    ]
     if hk_codes:
         hk_codes_5 = sorted({str(c).strip().zfill(5) for c in hk_codes})
-        hk_cached = _read_hk_yield_cache(hk_codes_5, date=today)
+        hk_cached = _read_hk_yield_cache(hk_codes_5, date=hk_trade_day)
         for c5, v in hk_cached.items():
             raw = _find_raw_code(data_map, c5)
             if raw is not None:
                 data_map[raw]["dy"] = v.get("dy")
                 data_map[raw]["by"] = v.get("by")
                 data_map[raw]["total"] = v.get("total")
+                data_map[raw]["note"] = v.get("note")
 
-        # 只需在股息与回购均缺失时才联网；无现金股息(但回购已取到)属正常结果不重复抓取
-        need_net = [c for c in hk_codes
-                    if data_map[c].get("dy") is None and data_map[c].get("by") is None]
-        if need_net:
-            hk_dy_map = _get_hk_dividend_yield_em(need_net, data_map)
+        # 股息与回购各自独立判断是否缺失：只要某字段仍为 None 就补取。
+        # 不可要求两者同时为 None——否则回购已取到(哪怕为0)的股票，其缺失的
+        # 股息将永远不再重试。0.0 表示已确认无该项，不再重取。
+        need_dy = [c for c in hk_codes if data_map[c].get("dy") is None]
+        need_by = [c for c in hk_codes if data_map[c].get("by") is None]
+        if need_dy:
+            hk_dy_map = _get_hk_dividend_yield_em(need_dy, data_map, ref_date=hk_trade_day)
             for code, dy_info in hk_dy_map.items():
                 if code in data_map:
                     data_map[code]["dy"] = dy_info.get("dy")
-            hk_by_map = _get_hk_buyback_yield_em(need_net, data_map)
+                    data_map[code]["note"] = dy_info.get("note")
+        if need_by:
+            hk_by_map = _get_hk_buyback_yield_em(need_by, data_map, ref_date=hk_trade_day)
             for code, by_info in hk_by_map.items():
                 if code in data_map:
                     data_map[code]["by"] = by_info.get("by")
 
-        # 计算股东总回报率 = 现金股息率 + 回购收益率，并写缓存
+        # 计算股东总回报率 = 现金股息率 + 回购收益率，并写缓存。
+        # 两者须同时已知：任一项未知则总回报未知（None），不可用部分和冒充总和
+        # （否则「股息未知、仅有回购」的股票会以回购额充当总回报，系统性低估）。
+        # 注：A股成份股无回购口径，其总回报=现金股息，在A股分支中处理。
         hk_save = {}
         for code in hk_codes:
             dy = data_map[code].get("dy")
             by = data_map[code].get("by")
-            total = None
-            if dy is not None and by is not None:
-                total = round(dy + by, 4)
-            elif dy is not None:
-                total = round(dy, 4)
-            elif by is not None:
-                total = round(by, 4)
+            total = round(dy + by, 4) if (dy is not None and by is not None) else None
             data_map[code]["total"] = total
             hk_save[str(code).strip().zfill(5)] = {
                 "price": data_map[code].get("price"),
                 "dy": dy, "by": by, "total": total,
+                "note": data_map[code].get("note"),
             }
-        _save_hk_yield_cache(hk_save, date=today)
+        _save_hk_yield_cache(hk_save, date=hk_trade_day)
 
     # 仅缓存A股估值数据
     a_share_data = {
@@ -1020,7 +1263,7 @@ def get_batch_data(stock_codes, market_map=None):
         for code, v in a_share_data.items():
             v.setdefault("by", None)
             v["total"] = v.get("dy")
-        _save_valuation_cache(a_share_data, date=today)
+        _save_valuation_cache(a_share_data, date=a_trade_day)
     return data_map
 
 
@@ -1076,9 +1319,12 @@ def _calc_etf_pe_pb(stock_df):
         result["整体PB"] = round(etf_pb, 2)
         result["PB覆盖率"] = f"{len(pb_valid)}/{len(valid)}"
 
+    # 收益率类指标用 >=0：股息率=0 是「确认无分红」的有效值，须计入分母；
+    # 仅 NaN（未知/已宣派未除净）才排除。用 >0 会把零股息股剔除，虚高加权股息率。
+    # PE/PB 仍用 >0，按惯例排除亏损股与负净资产股。
     dy_col = "股息率(%)" if "股息率(%)" in valid.columns else None
     if dy_col:
-        dy_valid = valid[valid[dy_col].notna() & (valid[dy_col] > 0)].copy()
+        dy_valid = valid[valid[dy_col].notna() & (valid[dy_col] >= 0)].copy()
         if not dy_valid.empty:
             w_dy = dy_valid["占比(%)"].sum()
             weighted_dy = (dy_valid["占比(%)"] * dy_valid[dy_col]).sum() / w_dy if w_dy > 0 else 0
@@ -1089,7 +1335,7 @@ def _calc_etf_pe_pb(stock_df):
     for col, key in (("回购收益率(%)", "加权回购收益率(%)"), ("股东总回报率(%)", "加权股东总回报率(%)")):
         if col not in valid.columns:
             continue
-        sub = valid[valid[col].notna() & (valid[col] > 0)].copy()
+        sub = valid[valid[col].notna() & (valid[col] >= 0)].copy()
         if sub.empty:
             continue
         w = sub["占比(%)"].sum()
@@ -1156,7 +1402,7 @@ def calc_etf_valuation(fund_code, market=None, date=None):
         return basic_info, pd.DataFrame(), {}
 
     close_prices, pe_list, pb_list, dy_list = [], [], [], []
-    by_list, total_list = [], []
+    by_list, total_list, note_list = [], [], []
     matched = 0
     for _, row in stock_df.iterrows():
         code = str(row["证券代码"]).strip()
@@ -1170,6 +1416,7 @@ def calc_etf_valuation(fund_code, market=None, date=None):
         dy_list.append(info.get("dy"))
         by_list.append(info.get("by"))
         total_list.append(info.get("total"))
+        note_list.append(info.get("note"))
         if info.get("price") is not None:
             matched += 1
     print(f"成功匹配 {matched}/{len(stock_df)} 只成份股行情")
@@ -1180,6 +1427,7 @@ def calc_etf_valuation(fund_code, market=None, date=None):
     stock_df["股息率(%)"] = dy_list
     stock_df["回购收益率(%)"] = by_list
     stock_df["股东总回报率(%)"] = total_list
+    stock_df["数据说明"] = note_list
 
     stock_df["数量"] = pd.to_numeric(stock_df["数量"].astype(str).str.replace(",", "", regex=False), errors="coerce")
     stock_df["市值"] = stock_df["数量"] * stock_df["收盘价"]
@@ -1274,12 +1522,24 @@ def cmd_valuation(args):
         for _, row in stock_df.head(10).iterrows():
             pe_str = f"PE:{row['PE']:.1f}" if pd.notna(row.get('PE')) and row.get('PE', 0) > 0 else "PE:-"
             pb_str = f"PB:{row['PB']:.2f}" if pd.notna(row.get('PB')) and row.get('PB', 0) > 0 else "PB:-"
-            dy_str = f"股息:{row['股息率(%)']:.2f}%" if pd.notna(row.get('股息率(%)')) and row.get('股息率(%)', 0) > 0 else "股息:-"
+            if pd.notna(row.get('股息率(%)')):
+                dy_str = f"股息:{row['股息率(%)']:.2f}%"
+                if row.get("数据说明"):
+                    dy_str += "*"          # * = 见下方数据说明
+            else:
+                dy_str = "股息:-"
             if pd.notna(row.get('股东总回报率(%)')) and row.get('股东总回报率(%)', 0) > 0:
                 dy_str += f"  总回报:{row['股东总回报率(%)']:.2f}%"
             print(f"  {row['证券代码']} {row['证券名称']:<8s}  "
                   f"占比: {row['占比(%)']:.2f}%  收盘价: {row['收盘价']:.2f}  "
                   f"{pe_str}  {pb_str}  {dy_str}")
+
+        # 逐只列出被标注的证券，说明其股息率为何按0计（区分「确认无分红」）
+        noted = stock_df[stock_df["数据说明"].notna()]
+        if not noted.empty:
+            print(f"\n--- 数据说明（{len(noted)} 只，股息率按0计）---")
+            for _, row in noted.iterrows():
+                print(f"  {row['证券代码']} {row['证券名称']}: {row['数据说明']}")
 
     if args.save and not stock_df.empty:
         filename = f"etf_valuation_{args.fund_code}_{datetime.now().strftime('%Y%m%d')}.csv"
