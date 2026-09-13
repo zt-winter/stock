@@ -55,32 +55,24 @@ python scripts/collect_financial_data.py tables
 
 | 数据源 | 市场 | 格式 | 说明 |
 |--------|------|------|------|
-| 新浪 | A股 | 宽表 86项 | 中文列名，财务指标 |
+| 新浪 | A股 | 宽表 | 中文列名，财务指标 |
 | 新浪 | A股 | 宽表 | 三大报表 |
 | 同花顺 | A股 | 长表 | 每行一个指标（metric_name + value） |
-| 东方财富 | A股 | 宽表 140项 | 英文缩写列名 |
-| 东方财富 | A股 | 宽表 300+列 | 三大报表 |
-| 东方财富 | 港股 | 宽表 36项 | 主要指标 |
+| 东方财富 | A股 | 宽表 | 英文缩写列名，财务指标 |
+| 东方财富 | A股 | 宽表 | 三大报表 |
+| 东方财富 | 港股 | 宽表 | 主要指标 |
 | 东方财富 | 港股 | 长表 | 三大报表（STD_ITEM_NAME + AMOUNT） |
 
-## 数据库表（共 15 张）
+> 各表的确切列数不在此处重复（写死过的 86/140/36 已与实际漂移），以 CLAUDE.md「数据库表」一节为准；查库用 `collect_financial_data.py tables`。
 
-### A 股（11 张）
+## 数据库表
 
-| 表名 | 数据源 |
-|------|--------|
-| `sina_financial_indicator` | 新浪-财务指标（86项） |
-| `em_financial_indicator` | 东财-主要指标（140项） |
-| `sina_balance_sheet` / `sina_income_statement` / `sina_cash_flow` | 新浪-三大报表 |
-| `ths_balance_sheet` / `ths_income_statement` / `ths_cash_flow` | 同花顺-三大报表（长表） |
-| `em_balance_sheet` / `em_income_statement` / `em_cash_flow` | 东财-三大报表（宽表） |
+采集器写入 15 张财报表：
 
-### 港股（4 张）
+- **A 股（11 张）**：`sina_` / `ths_` / `em_` × `{balance_sheet, income_statement, cash_flow}`，加 `sina_financial_indicator`、`em_financial_indicator`
+- **港股（4 张）**：`hk_financial_indicator` 与 `hk_balance_sheet` / `hk_income_statement` / `hk_cash_flow`
 
-| 表名 | 说明 |
-|------|------|
-| `hk_financial_indicator` | 主要指标（36项，含 CURRENCY） |
-| `hk_balance_sheet` / `hk_income_statement` / `hk_cash_flow` | 三大报表（长表） |
+各表的列数、字段与"只写不读"标注见项目根 [CLAUDE.md](../../../CLAUDE.md)「数据库表」一节——**那一节是表清单的唯一维护点**，本文件只记"采集器写哪些表"，不重复列元数据（重复过的列数已经漂移过一轮）。
 
 ## 统一字段
 

@@ -66,51 +66,22 @@ python scripts/etf_valuation.py valuation --fund-code 510300
 - **财报查询**: 按需查询特定财务指标
 - **行业竞争**: 按 [industry-competition.md](industry-competition.md) 流程执行。必须先通过 Web Search 确认公司主营业务和所属行业（与东财 API 结果交叉验证），再运行脚本分析，重点关注龙头优势倍数和集中度指标
 
-## 数据库表总览
+## 数据库表
 
-`financial_data.db` 现含 **26 张表**（另有 1 张惰性表 `stock_dividend`，见下）。下按用途分组；**权威口径（含"只写不读"与遗留表的完整说明）见项目根 [CLAUDE.md](../../../CLAUDE.md) 的「数据库表」一节**。
+**表清单只在项目根 [CLAUDE.md](../../../CLAUDE.md) 的「数据库表」一节维护**——全部 26 张表的用途、列数、"只写不读"与遗留表标注都在那里。本文件不重复列出，以免两处漂移。
 
-### 财报数据（15张）
+本 skill 各模块**写入**的表：
 
-| 类别 | 表名 | 数据源 |
-|------|------|--------|
-| A股指标 | `em_financial_indicator` | 东财主要指标（宽表 143 列，**分析脚本 + buffett-lens 的 ROE/毛利率/杠杆读数依赖它**） |
-| | `sina_financial_indicator` | 新浪财务指标（宽表 88 列）**`只写不读`** |
-| A股三大报表 | `em_balance_sheet` / `em_income_statement` / `em_cash_flow` | 东财（宽表 323/207/258 列，**分析脚本的主力数据源**） |
-| | `sina_balance_sheet` / `sina_income_statement` / `sina_cash_flow` | 新浪（中文列名）**`只写不读`** |
-| | `ths_balance_sheet` / `ths_income_statement` / `ths_cash_flow` | 同花顺（`metric_name`/`value` 长表）**`只写不读`**，三张约占库体积 44% |
-| 港股 | `hk_financial_indicator` | 东财港股主要指标（**可选表**，指标层主要靠下面三张长表合成） |
-| | `hk_balance_sheet` / `hk_income_statement` / `hk_cash_flow` | EAV 长表（`year`/`quarter`/`STD_ITEM_CODE`/`AMOUNT`），靠科目代码取值 |
+| 模块 | 写入的表 |
+|------|----------|
+| 财报采集 | 15 张财报表：`{sina,ths,em}_` × `{balance_sheet,income_statement,cash_flow}`，加 `sina_financial_indicator`、`em_financial_indicator`，以及港股 `hk_financial_indicator` 与 `hk_balance_sheet/_income_statement/_cash_flow` |
+| ETF 估值 | `stock_valuation`、`hk_yield_cache`；`dividend` 子命令另建分红汇总表 `stock_dividend`（惰性，首跑才出现） |
+| 周期股 | `stock_valuation_history` |
+| 红利股 | `dividend_annual_yield`、`stock_dividend_detail`、`stock_repurchase` |
 
-### 估值与汇率（4张）
+`hk_fx_rate` 与 `hk_segment_revenue` **不由本 skill 写入**（分别归 buffett-lens 与 financial-report-pdf-extractor）；三张中文名遗留表无任何代码引用。
 
-| 表名 | 说明 |
-|------|------|
-| `stock_valuation` | 股票估值缓存（PE/PB/股息率/价格，单日快照） |
-| `stock_valuation_history` | PE/PB 历史序列（7天有效期）；`market_cap` **仅港股有值**，A 股为 NULL 需推算 |
-| `hk_yield_cache` | 港股股息率/回购收益率**单日快照**（由 `etf_valuation.py` 写入） |
-| `hk_fx_rate` | 港元兑人民币汇率（含 `spot_year_end` 年末即期，港股折人民币必须用年末即期而非年均） |
-
-### 分红与回购（3张 + 1张惰性表）
-
-| 表名 | 说明 |
-|------|------|
-| `dividend_annual_yield` | 年度股息率缓存（**当前仅覆盖 `601919`**） |
-| `stock_dividend_detail` | A股分红**明细**（中文列名 `代码`/`派息`/`送股`/`进度`…），由 `dividend_stock_analysis.py` 按代码先删后插 |
-| `stock_repurchase` | 股票回购记录（**当前仅覆盖 `601919`**） |
-| `stock_dividend`（惰性） | A股分红**汇总**（`stock_code`/`名称`/`累计股息`/`年均股息`/`分红次数`/`融资总额`…），由 `etf_valuation.py` 的 `dividend` 子命令写入。**当前库中尚未创建**，首跑后表数变 27。详见 [etf-valuation.md](etf-valuation.md) |
-
-> `stock_dividend` 与 `stock_dividend_detail` 是**两张用途不同的表**，不是同一张表的改名：前者每只股票一行（汇总股息率与分红次数），后者每笔分红一行（公告日、派息、除权日）。`buffett_analysis.py` 两个都不读——它的股息取自 `dividend_annual_yield`。
-
-### 分部数据（1张）
-
-| 表名 | 说明 |
-|------|------|
-| `hk_segment_revenue` | 港股分部收入/业绩/折旧/资本开支，由 `financial-report-pdf-extractor` 的 `extract_segment_note.py` 从年报分部附注抽出入库。含 `metric`（`external_revenue` 对外销售 / `segment_revenue` 含分部间 / `segment_result` / `depreciation` / `capex`）与 `kind`（segment/elimination/total）两列口径标注——**跨口径不可比较**。已覆盖 `00322`（2020-2025）、`09633`（2019-2025） |
-
-### 遗留表（3张）—— 无代码引用
-
-`资产负债表` / `利润表` / `现金流量表` — 各 234 行，schema 与 `em_*` 三张**逐列相同**，仅含 6 只白酒股（`000568` `000596` `000799` `002304` `600809` `603369`）。自首个 git 提交即在库中，当前无任何代码路径产出或读取。保留不删，仅作登记。
+> 唯一容易踩的坑：`stock_dividend`（每只股票一行的**汇总**，ETF 模块惰性建）与 `stock_dividend_detail`（每笔分红一行的**明细**，红利股模块写）是**两张用途不同的表，不是改名关系**。
 
 **估值缓存说明**：
 - 周期股分析脚本会自动缓存估值数据到 `stock_valuation_history` 表

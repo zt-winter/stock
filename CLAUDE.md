@@ -166,6 +166,8 @@ python .claude/skills/security-analysis/scripts/collect_financial_data.py query 
 > 表数已与库核对一致。标注 **`只写不读`** 的表每次 `collect` 仍会写入，但全项目无任何 SELECT 读取（其中 `ths_*` 三张占库体积约 44%）；标注 **`遗留`** 的表无任何代码路径产出或读取。
 >
 > 另有 1 张**惰性表** `stock_dividend`（分红汇总），由 `etf_valuation.py` 的 `dividend` 子命令在建表时写入——该子命令尚未跑过，故当前库中不存在，首跑后表数变 27。
+>
+> **本节是表清单的唯一维护点。** 各 skill 的文档只写"本模块写入哪些表"，不再重复列清单与列数——`security-analysis` 的 `SKILL.md` 与 `financial-report.md` 曾各存一份副本，且已经漂移（列数写作 140/86，实际 143/88）。增删或改名表时只改本节一处。
 
 ### A股指标（2张）
 
