@@ -14,7 +14,7 @@
   - `stock_code`：股票代码（A股6位数字，港股5位数字）
   - `report_type`：报告类型（"年报"或"中报"）
   - `year`：年份（如2024、2025）
-  - `output_dir`：输出目录（默认：`company_analysis/`）
+  - `output_dir`：输出目录（默认：`report/`，与 `financial-report-pdf-extractor` 的约定一致）
 
 - **验证规则**：
   - 股票代码格式验证：A股600000-699999，港股00001-09999
@@ -108,19 +108,19 @@
 
 #### 目录结构
 ```
-company_analysis/
+report/
 ├── {公司名称}_{股票代码}/
 │   ├── {公司名称}_{年份}_年报.pdf
 │   ├── {公司名称}_{年份}_中报.pdf
 │   └── metadata.json（可选元数据）
 ├── download_log.md
-└── verification_report.md
+└── validation_report.md
 ```
 
 #### 命名规范
 - **目录名**：`{公司名称}_{股票代码}`（中文名称，特殊字符替换为下划线）
 - **文件名**：`{公司名称}_{年份}_{报告类型}.pdf`
-- **日志文件**：`download_log.md`，`verification_report.md`
+- **日志文件**：`download_log.md`，`validation_report.md`
 
 #### 文件操作
 1. 创建目标目录（如果不存在）
@@ -145,7 +145,7 @@ company_analysis/
 |---------|---------|---------|------|--------|----------|----------|----------|----------|
 ```
 
-#### 校验报告（verification_report.md）
+#### 校验报告（validation_report.md）
 ```markdown
 # 财务报告验证报告
 

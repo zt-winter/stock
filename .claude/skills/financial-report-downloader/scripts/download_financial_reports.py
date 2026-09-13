@@ -46,12 +46,13 @@ logger = logging.getLogger(__name__)
 class FinancialReportDownloader:
     """财务报告下载器主类"""
     
-    def __init__(self, output_dir: str = "company_analysis"):
+    def __init__(self, output_dir: str = "report"):
         """
         初始化下载器
-        
+
         Args:
-            output_dir: 输出目录，默认为company_analysis
+            output_dir: 输出目录，默认为 report（与 financial-report-pdf-extractor
+                及 buffett-lens 的目录约定一致，下载完可直接送抽取脚本）
         """
         self.output_dir = output_dir
         self.download_log = []
@@ -487,7 +488,7 @@ def main():
     parser.add_argument("--year", type=int, required=True, help="年份")
     parser.add_argument("--report-type", required=True, choices=["年报", "中报"], help="报告类型")
     parser.add_argument("--source", required=True, help="PDF文件URL")
-    parser.add_argument("--output-dir", default="company_analysis", help="输出目录")
+    parser.add_argument("--output-dir", default="report", help="输出目录（默认 report，与财报抽取 skill 的约定一致）")
     
     args = parser.parse_args()
     

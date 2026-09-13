@@ -25,7 +25,11 @@ A股/港股股票投资分析工具集。包含四个 skill：
 
 ## 运行环境
 
-- 必须使用项目 venv：`.venv/bin/python`（已装 akshare 1.18.x、pandas、requests、PyMuPDF、pypdf、pdfminer.six）。系统 `python`/`python3` 未装这些库，直接跑脚本会 ImportError。
+- 必须使用项目 venv：`.venv/bin/python`。**`.venv/` 不入 git，也可能尚未创建**——执行任何脚本前先确认它存在，缺失则：
+  ```bash
+  python3 -m venv .venv && .venv/bin/pip install akshare pandas requests beautifulsoup4 lxml pymupdf
+  ```
+  系统 `python`/`python3` 未装 `akshare`/`pymupdf`，直接跑脚本会在 import 阶段 ImportError。
 - 数据库定位顺序：`FINANCIAL_DATA_DIR` 环境变量 > 当前工作目录 > 向上查找含 `financial_data.db` 的目录（默认命中 `/home/zt/stock/financial_data.db`）。`--db`/`--db-dir` 参数仍然优先。
 - 分析前必须先执行 `collect` 命令采集数据，否则查不到数据。
 - 估值类接口有 7 天缓存，加 `--refresh` 强制刷新。

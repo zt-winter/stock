@@ -185,7 +185,7 @@ JSON → Markdown 转换工具。
 **新增一家公司**：在 `PROFILES` 里补一份——公司名、`note_kw`、`year_re`（该表期间年度的锚点，**不是页眉的报表年度**）、`columns`（含 kind: segment/elimination/total）、`rows`（zh 须与年报正文逐字一致）。
 
 ### pdf_helper.py
-PDF 兼容层，封装 PyMuPDF/pypdf/pdfminer.six，提供 `open_pdf()`、`ColumnPage`、`ColumnRow` 等统一 API。两个 skill（extractor 和 downloader）各有一份相同副本。
+PDF 兼容层，封装 PyMuPDF/pypdf/pdfminer.six，提供 `open_pdf()`、`ColumnPage`、`ColumnRow` 等统一 API。**唯一实现在本目录**——`financial-report-downloader/scripts/pdf_helper.py` 是指向本文件的软链接，只改这里，不存在两份副本需要同步。
 
 ## Financial Accounting References
 

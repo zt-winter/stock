@@ -61,7 +61,7 @@ description: 从网络搜索、下载、验证并规范化存储上市公司财�
 4. 验证通过的文件继续处理，失败的文件记录原因
 
 ### 第5步：规范化存储
-1. 创建目录：`company_analysis/{公司名称}_{股票代码}/`
+1. 创建目录：`report/{公司名称}_{股票代码}/`
 2. 重命名文件：`{公司名称}_{年份}_{年报/中报}.pdf`
 3. 移动文件到目标目录
 
@@ -100,7 +100,7 @@ description: 从网络搜索、下载、验证并规范化存储上市公司财�
 .venv/bin/python .claude/skills/financial-report-downloader/scripts/verify_pdf.py --file "海尔智家_2024_年报.pdf" --company "海尔智家" --report-type "年报"
 
 # 批量验证目录
-.venv/bin/python .claude/skills/financial-report-downloader/scripts/verify_pdf.py --dir "company_analysis/" --report
+.venv/bin/python .claude/skills/financial-report-downloader/scripts/verify_pdf.py --dir "report/" --report
 ```
 
 ## 详细工作流程
@@ -135,19 +135,21 @@ description: 从网络搜索、下载、验证并规范化存储上市公司财�
 - **search_companies.py**：公司信息搜索脚本，辅助定位财报来源
 
 ### 辅助模块
-- **pdf_helper.py**：PDF 兼容层，封装 PyMuPDF/pypdf/pdfminer.six，提供 `open_pdf()` 统一 API。两个 skill（extractor 和 downloader）各有一份相同副本
+- **pdf_helper.py**：PDF 兼容层，封装 PyMuPDF/pypdf/pdfminer.six，提供 `open_pdf()` 统一 API。**本目录下的 pdf_helper.py 是指向 `financial-report-pdf-extractor/scripts/pdf_helper.py` 的软链接**——唯一实现在 extractor 那边，改一处即可，不存在两份副本需要同步
 
 ## 目录结构规范
 
 ```
-company_analysis/
+report/
 ├── {公司名称}_{股票代码}/
 │   ├── {公司名称}_{年份}_年报.pdf
 │   ├── {公司名称}_{年份}_中报.pdf
-│   └── download_verification.log（可选）
+│   └── metadata.json（可选元数据）
 ├── download_log.md（全局下载清单）
-└── verification_report.md（全局验证报告）
+└── validation_report.md（全局验证报告）
 ```
+
+> `report/*_*/` 已在 `.gitignore` 中：单份年报 PDF 可达 46MB，原文不入库（抽出的数据落在 `financial_data.db`，可用 `extract_segment_note.py` 随时重抽）。`report/` 根目录下的分析报告（如问诊单）仍会入库。
 
 ## 注意事项
 

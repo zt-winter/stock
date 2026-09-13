@@ -66,7 +66,7 @@
 
 | 级别 | 来源 | 怎么复核 | 能承担什么 |
 |---|---|---|---|
-| **A · 可重算** | `financial_data.db`（三表 / `hk_segment_revenue` / `stock_valuation_history` / `stock_dividend`） | 重跑 `buffett_analysis.py`，数字必须一致 | **可作判定依据** |
+| **A · 可重算** | `financial_data.db`（三表 / `hk_segment_revenue` / `stock_valuation_history` / `dividend_annual_yield` / `hk_yield_cache`） | 重跑 `buffett_analysis.py`，数字必须一致 | **可作判定依据** |
 | **B · 年报原文** | 年报/中报 PDF 正文，**必须给页码**（`[年报<年> p<n>]`） | 翻到该页逐字核对 | **可作判定依据**；但单条 B 类无对账，不足以独撑一条判定 |
 | **C · 外部来源** | 财经媒体、市场研究、券商研报、搜索摘要 | **不可复核** | **只许进「我的推测」一节，不得出现在第一至四节的任何依据栏** |
 | **D · 语料** | `buffett_corpus.db`，带 `chunk_id` | `search_corpus.py get --chunk-id` + 三键校验 | **可作判定依据**（引用） |

@@ -96,14 +96,19 @@ $V $S/lint_citations.py --cards principles/ --self-test   # 闸门自检 + 卡�
 
 ## 依赖
 
+各文档与 SKILL.md 中的 `.venv/bin/python` 指的是**项目虚拟环境**（`.venv/`，不入 git）。首次使用先建环境：
+
 ```bash
-pip install akshare pandas requests
-# buffett-lens 语料采集额外需要（PDF/HTML 抽取）
-pip install beautifulsoup4 lxml pymupdf
+python3 -m venv .venv
+.venv/bin/pip install akshare pandas requests
+# buffett-lens 语料采集 + 两个 PDF skill 额外需要（PDF/HTML 抽取）
+.venv/bin/pip install beautifulsoup4 lxml pymupdf
 ```
 
+- **不要用系统 `python3` 跑这些脚本**：`akshare` 与 `pymupdf` 通常只装在 venv 里，缺任一个都会在 import 阶段直接失败。
 - buffett-lens 采集致股东信时 CDN 强制 `Content-Encoding: br`，若环境未装 `brotli`，脚本会回退调用 `curl --compressed`，**需系统有 `curl`**。
 - buffett-lens 索引库用 SQLite FTS5 的 `trigram` 与 `porter unicode61` 分词器，需 SQLite ≥ 3.34。
+- PDF skill 的 `pdf_helper.py` 按 PyMuPDF > pypdf > pdfminer.six 顺序探测后端，**只有 PyMuPDF 支持 `ColumnPage` 位置感知提取**；退到 pypdf/pdfminer 时财报主表提取会失效。
 
 ## 快速开始
 
@@ -156,9 +161,11 @@ python .claude/skills/security-analysis/scripts/collect_financial_data.py query 
 - **数据库定位不依赖脚本目录的固定层级**：各脚本按 `FINANCIAL_DATA_DIR` 环境变量 > 当前工作目录 > 向上查找含 `financial_data.db` 的目录依次解析，因此 DSH 会话（cwd 为项目根）无需额外配置即可命中 `/home/zt/stock/financial_data.db`；`--db`/`--db-dir` 参数仍然优先。
 - DSH 中通过 `skill` 工具加载（无需 `/security-analysis` 斜杠命令）；Claude Code 中用法不变。
 
-## 数据库表（共26张）
+## 数据库表（现库中26张）
 
 > 表数已与库核对一致。标注 **`只写不读`** 的表每次 `collect` 仍会写入，但全项目无任何 SELECT 读取（其中 `ths_*` 三张占库体积约 44%）；标注 **`遗留`** 的表无任何代码路径产出或读取。
+>
+> 另有 1 张**惰性表** `stock_dividend`（分红汇总），由 `etf_valuation.py` 的 `dividend` 子命令在建表时写入——该子命令尚未跑过，故当前库中不存在，首跑后表数变 27。
 
 ### A股指标（2张）
 
@@ -186,7 +193,7 @@ python .claude/skills/security-analysis/scripts/collect_financial_data.py query 
 ### 分红与回购（3张）
 
 - `dividend_annual_yield` — 年度股息率缓存（**当前仅覆盖 `601919`**）
-- `stock_dividend_detail` — A股历史分红明细（中文列名 `代码`/`派息`…）——注意**不叫** `stock_dividend`
+- `stock_dividend_detail` — A股历史分红**明细**（中文列名 `代码`/`派息`/`送股`/`进度`…），由 `dividend_stock_analysis.py` 写入。**与 `stock_dividend` 是两张用途不同的表，不是改名关系**——后者是每只股票一行的**汇总**（`名称`/`累计股息`/`年均股息`/`分红次数`/`融资总额`），由 `etf_valuation.py` 的 `dividend` 子命令写入。`buffett_analysis.py` 两个都不读，它的股息取自 `dividend_annual_yield`
 - `stock_repurchase` — 股票回购记录（**当前仅覆盖 `601919`**）
 
 ### 分部数据（1张）
