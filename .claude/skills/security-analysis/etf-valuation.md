@@ -3,8 +3,11 @@
 基于上交所/深交所申赎清单，批量获取成份股行情（PE/PB/TTM股息率），计算ETF加权估值指标。
 支持A股ETF和港股跨境ETF（如恒生消费、恒生科技等）。
 
-**CLI 工具**: `scripts/etf_valuation.py`（独立版，无需依赖外部模块）
-**核心模块**: `etf_weight.py`、`etf_redemption.py`、`stock_dividend.py`（项目根目录）
+**CLI 工具 / 核心模块**: `scripts/etf_valuation.py`（既是独立版 CLI，也可 Python 导入，无需依赖外部模块）
+
+> **本模块唯一入口就是 `scripts/etf_valuation.py`。** 它已完整覆盖原先根目录三个脚本的能力，**并额外包含港股回购注销计入股息的逻辑**——根目录的 `etf_weight.py` 与 `stock_dividend.py` 已删除（它们缺这块逻辑，照着旧文档调用会把港股 ETF 股息率退回修复前的口径）。
+>
+> 仅根目录 `etf_redemption.py` 保留，因其有 4 个函数无对应：`download_sse_pcf`（上交所 PCF 文本文件下载落盘）、`query_etf_list`（沪深合并列表）、`save_to_csv`、`_clean_html`。日常 ETF 估值不需要它。
 
 ## CLI 用法
 

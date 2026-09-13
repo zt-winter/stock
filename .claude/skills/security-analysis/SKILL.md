@@ -4,7 +4,7 @@ description: A股/港股投资分析工具集。五大功能模块共用一个 S
 ---
 
 > **⚠️ 软链接共享提示**
-> 本 skill 目录通过软链接被 `.qoder/skills/security-analysis` 和 `.dsh/skills/security-analysis` 引用，三者指向同一份物理文件。
+> 本 skill 目录通过软链接被 `.dsh/skills/security-analysis`、`.qoder/skills/security-analysis`、`.opencode/skills/security-analysis` 引用，四者指向同一份物理文件。
 > 修改时请直接在当前路径编辑，**不要删除后重建文件**，以免破坏软链接导致各工具间配置不同步。
 
 # 股票投资分析工具集

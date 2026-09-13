@@ -3,7 +3,6 @@
     "allow": [
       "Bash(python3 *)",
       "Bash(FINANCIAL_DATA_DIR=/home/zt/stock python3 .qoder/skills/security-analysis/scripts/collect_financial_data.py tables)",
-      "Bash(python stock_dividend.py --help)",
       "Bash(python *)",
       "Bash(sqlite3 financial_data.db \"SELECT DISTINCT STD_ITEM_NAME FROM hk_income_statement WHERE stock_code='09987';\")",
       "Bash(sqlite3 financial_data.db \"SELECT DISTINCT STD_ITEM_NAME FROM hk_balance_sheet WHERE stock_code='09987';\")",

@@ -1,6 +1,6 @@
 ---
 name: financial-report-pdf-extractor
-description: '从上市公司年报/中报 PDF 中提取财务报表数据（资产负债表、损益表、现金流量表）。采用 ColumnPage 位置感知提取技术，通过 X/Y 坐标聚类精确对齐栏目与金额，支持中英文双语财报（HKFRS/IFRS）。输出结构化 JSON 和 Markdown 表格。适用于：提取财报PDF中的财务数据、解析中英文双语报表、将PDF表格转为结构化数据。'
+description: '从上市公司年报/中报 PDF 中提取财务报表数据（资产负债表、损益表、现金流量表）与分部收入附注（经营分部资料）。主表采用 ColumnPage 位置感知提取技术，通过 X/Y 坐标聚类精确对齐栏目与金额；分部附注按公司版式档抽取，列序从页面表头读取，落 hk_segment_revenue 表，带合计校验与利润表对账两道硬闸门。支持中英文双语财报（HKFRS/IFRS）。输出结构化 JSON 和 Markdown 表格。适用于：提取财报PDF中的财务数据、解析中英文双语报表、抽取分部收入/分部业绩、将PDF表格转为结构化数据。'
 ---
 
 # Financial Report PDF Extractor
@@ -25,6 +25,10 @@ description: '从上市公司年报/中报 PDF 中提取财务报表数据（资
 
 # JSON → Markdown 转换
 .venv/bin/python .claude/skills/financial-report-pdf-extractor/scripts/generate_markdown_tables.py data.json output.md
+
+# 分部收入附注抽取（经营分部资料 / Segment Information），带两道硬校验
+.venv/bin/python .claude/skills/financial-report-pdf-extractor/scripts/extract_segment_note.py \
+    --pdf report/农夫山泉_09633/农夫山泉_2025_年报.pdf --code 09633 --store
 ```
 
 ## Core Capabilities
@@ -158,6 +162,27 @@ JSON → Markdown 转换工具。
 ```bash
 .venv/bin/python generate_markdown_tables.py <json_input> <output_md>
 ```
+
+### extract_segment_note.py
+从年报「经营分部资料」附注中抽取**分部收入 / 分部业绩 / 折旧 / 资本开支**，落 `hk_segment_revenue` 表。与三个主表提取器不同，它抽的是**附注**，且必须按公司配「版式档」。
+
+```bash
+.venv/bin/python extract_segment_note.py --pdf <年报.pdf> --code <代码> [--json out.json] [--store] [--metric M]
+```
+
+**为什么要按公司写死版式档（`PROFILES`）**：分部名称、分部个数、有无「内部沖销」列各家都不同；更要命的是**年度标记**——康师傅年报每页页眉都印「截至2025年12月31日止年度」，而其中几页装的是 2024 比较数，按页眉抓年份会把 2024 数标成 2025 且不报错。抓不到版式就报错退出，绝不猜。
+
+**列序从页面上读，不照搬版式档**：农夫山泉 2020 年报把「功能飲料產品」与「即飲茶類產品」两列前后调了位置（2021 年报起才改成茶饮在前）。按固定列序贴值会让这两列的数整体互换，而**合计校验照样通过**——合计跟列序无关。所以列序只信页面上印的那一个。
+
+**两道硬校验，任一不过即拒绝入库**：
+1. 同一口径内：Σ分部 + 内部沖销 == 总计
+2. 分部对外收入合计 == 利润表「营运收入」(`004001999`)
+
+**重叠年度一致性**：一份年报含两年数据，所以每个年度会被相邻两份年报各披露一次。`--store` 时若库内已有值与本份不一致，**既不覆盖也不丢弃**，直接报冲突退出——农夫山泉 2020 年报的列序错位就是这样现形的。
+
+**口径提醒**：`external_revenue`（对外销售）与 `segment_revenue`（含分部间）不可混用。康师傅两者的差额是「其他來源之收入」（投资性房地产租金等），与利润表严丝合缝的是 `segment_revenue`。
+
+**新增一家公司**：在 `PROFILES` 里补一份——公司名、`note_kw`、`year_re`（该表期间年度的锚点，**不是页眉的报表年度**）、`columns`（含 kind: segment/elimination/total）、`rows`（zh 须与年报正文逐字一致）。
 
 ### pdf_helper.py
 PDF 兼容层，封装 PyMuPDF/pypdf/pdfminer.six，提供 `open_pdf()`、`ColumnPage`、`ColumnRow` 等统一 API。两个 skill（extractor 和 downloader）各有一份相同副本。

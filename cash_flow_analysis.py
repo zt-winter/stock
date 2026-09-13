@@ -42,7 +42,9 @@ cash_flow_analysis.py - 经营性现金流分析工具（含非经常性损益�
     python cash_flow_analysis.py --code 000858 --market sz --year 2023
 
 依赖:
-    需先通过 financial_report.py 采集目标股票的财报数据
+    需先通过 collect_financial_data.py 采集目标股票的财报数据
+    python .claude/skills/security-analysis/scripts/collect_financial_data.py \
+        collect --code 600519 --market sh
 """
 
 import argparse
@@ -58,7 +60,7 @@ if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 # ---------------------------------------------------------------------------
-# 数据库路径（与 financial_report.py 保持一致）
+# 数据库路径（与 collect_financial_data.py 保持一致）
 # ---------------------------------------------------------------------------
 DB_PATH = str(Path(__file__).parent / "financial_data.db")
 
@@ -165,12 +167,14 @@ def analyze_cash_flow(stock_code: str, market: str, year: int, quarter: int = 4,
 
     if cf is None:
         print(f"错误: 未找到 {stock_code}.{market} {year}年 第{quarter}期 的现金流量表数据")
-        print("请先通过 financial_report.py 采集该股票的财报数据")
+        print("请先采集财报数据: .claude/skills/security-analysis/scripts/collect_financial_data.py "
+              f"collect --code {stock_code} --market {market}")
         sys.exit(1)
 
     if inc is None:
         print(f"错误: 未找到 {stock_code}.{market} {year}年 第{quarter}期 的利润表数据")
-        print("请先通过 financial_report.py 采集该股票的财报数据")
+        print("请先采集财报数据: .claude/skills/security-analysis/scripts/collect_financial_data.py "
+              f"collect --code {stock_code} --market {market}")
         sys.exit(1)
 
     # ---- 1. 报告经营现金流（直接法） ----

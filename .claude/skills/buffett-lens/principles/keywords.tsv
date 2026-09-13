@@ -1,0 +1,60 @@
+# 关键词 → 原则卡 路由表
+# 用法：用户问题的措辞命中左列关键词时，加载中间列的卡。
+# 第三列是检索语料时的建议关键词（英文查 letters，中文查 annual_meeting）。
+# 制表符分隔，勿用空格。
+关键词	卡片	语料检索建议
+能力圈	circle-of-competence	circle of competence / 能力圈
+看不懂	business-predictability	simple and stable / 看不懂
+太复杂	business-predictability	complex / 变化快
+护城河	moat-durability	moat / 护城河
+竞争优势	moat-durability	competitive advantage / 竞争优势
+定价权	pricing-power	pricing power / 提价
+提价	pricing-power	pricing power / 涨价
+涨价	pricing-power	pricing power / 提价
+毛利率	pricing-power	XSMLL / 毛利率
+ROE	roe-consistency	return on equity / 净资产收益率
+净资产收益率	roe-consistency	return on equity / ROE
+股东盈余	owner-earnings	owner earnings / 股东盈余
+自由现金流	owner-earnings	owner earnings / 自由现金流
+经营现金流	earnings-quality	operating cash flow / 现金流
+利润含金量	earnings-quality	earnings quality / 应收账款
+应收账款	earnings-quality	receivables / 应收账款
+资本开支	capital-allocation	capital allocation / 资本开支
+并购	capital-allocation	acquisition / 并购
+回购	capital-allocation	repurchase / 回购
+分红	capital-allocation	dividend policy / 分红
+派息	capital-allocation	dividend policy / 股息
+留存收益	retained-earnings-one-dollar	retained earnings / 留存
+留存	retained-earnings-one-dollar	retained earnings / 留存收益
+管理层	management-integrity	management / 管理层
+诚信	management-integrity	integrity / 诚信
+财务造假	management-integrity	personal misconduct / 造假
+负债	leverage-prudence	leverage / 负债
+杠杆	leverage-prudence	leverage / 杠杆
+有息负债	leverage-prudence	debt / 有息负债
+借钱	leverage-prudence	borrowed money / 借钱
+安全边际	margin-of-safety	margin of safety / 安全边际
+估值	margin-of-safety	margin of safety / 估值
+贵不贵	margin-of-safety	price / 价格
+PE	margin-of-safety	margin of safety / 市盈率
+市盈率	margin-of-safety	margin of safety / PE
+大跌	market-mr-market	Mr. Market / 下跌
+暴跌	market-mr-market	Mr. Market / 恐慌
+恐慌	market-mr-market	fear / 恐惧
+情绪	market-mr-market	temperament / 情绪
+要不要卖	sell-discipline	selling / 卖出
+止盈	sell-discipline	selling / 卖出
+卖出	sell-discipline	selling / 卖出
+永久持有	sell-discipline	hold forever / 长期持有
+犯错	mistakes-and-omission	mistakes / 错误
+看错了	mistakes-and-omission	mistakes / 判断失误
+错过	mistakes-and-omission	thumb-sucking / 错过
+后悔	mistakes-and-omission	thumb-sucking / 后悔
+止损	mistakes-and-omission	mistakes / 止损
+# 周期股没有独立卡片：PE 分位在周期顶会语义反转，这条修正写在 margin-of-safety 卡里，
+# 并与 security-analysis 技能的 cyclical-analysis-guide.md 对齐。
+周期	margin-of-safety	cyclical / 周期
+周期股	margin-of-safety	commodity / 大宗商品
+# 银行/保险没有独立卡片，就近路由到杠杆卡（这两类生意的杠杆语义特殊，卡里已注明）。
+银行	leverage-prudence	banking / 银行
+保险	leverage-prudence	insurance float / 浮存金

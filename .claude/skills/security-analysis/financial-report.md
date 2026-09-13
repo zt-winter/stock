@@ -2,8 +2,7 @@
 
 基于 akshare 从多数据源采集 A 股 + 港股财报数据，存入 `financial_data.db`。
 
-**CLI 工具**: `scripts/collect_financial_data.py`（独立版，无需依赖外部模块）
-**核心模块**: `financial_report.py`（项目根目录，支持 Python 导入）
+**CLI 工具 / 核心模块**: `scripts/collect_financial_data.py`（既是独立版 CLI，也可 Python 导入，无需依赖外部模块）
 
 ## CLI 用法
 
@@ -99,7 +98,9 @@ python scripts/collect_financial_data.py tables
 ## Python 模块导入
 
 ```python
-from financial_report import (
+import sys; sys.path.insert(0, ".claude/skills/security-analysis/scripts")
+
+from collect_financial_data import (
     get_financial_report,          # 新浪-财务指标（A股）
     get_financial_report_em,       # 东财-主要指标（A股）
     get_financial_statements_sina, # 新浪-三大报表（A股）
@@ -110,6 +111,8 @@ from financial_report import (
     get_conn, save_to_db, DB_PATH
 )
 ```
+
+> 这些函数原在项目根目录 `financial_report.py`，该文件已删除；`collect_financial_data.py` 逐一同名覆盖（函数级比对确认），用法不变。
 
 ## 查询技巧
 

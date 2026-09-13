@@ -226,7 +226,8 @@ def fetch_quarterly_financials(stock_code: str, market: str,
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='em_income_statement'")
     if not cur.fetchone():
         print(f"警告: 数据库 {db_path} 中未找到 em_income_statement 表")
-        print("请先通过 financial_report.py 采集数据")
+        print("请先采集财报数据: collect_financial_data.py collect "
+              f"--code {stock_code} --market {market}")
         conn.close()
         return pd.DataFrame()
 
@@ -268,7 +269,8 @@ def fetch_quarterly_financials(stock_code: str, market: str,
 
     if income_df.empty and cash_df.empty:
         print(f"警告: 数据库中未找到 {stock_code}.{market} 的财报数据")
-        print("请先通过 financial_report.py 采集数据")
+        print("请先采集财报数据: collect_financial_data.py collect "
+              f"--code {stock_code} --market {market}")
         return pd.DataFrame()
 
     # 合并三表

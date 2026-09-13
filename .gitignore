@@ -1,2 +1,19 @@
 __pycache__/
 *.py[cod]
+
+# buffett-lens：语料原文与索引库不入库（版权 + 体积）
+# 语料来自 berkshirehathaway.com 与 BRK-Annual-Meeting（无 LICENSE，要求注明 CNBC）
+.claude/skills/buffett-lens/corpus/
+.claude/skills/buffett-lens/buffett_corpus.db*
+
+# 年报 PDF 原文不入库：单份可达 46MB（康师傅 2025），两家十份就 145MB。
+# 抽出的分部数据已落在 financial_data.db 的 hk_segment_revenue，可随时用
+# extract_segment_note.py 从原文重抽——原文留着是为了可复核，不必进 git。
+report/*_*/
+
+# 抽取/下载过程中的临时件
+report/_tmp/
+
+# SQLite WAL 副产物：每次开库都会变动，不忽略会持续污染 git status
+*.db-wal
+*.db-shm
