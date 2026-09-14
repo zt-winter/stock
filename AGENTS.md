@@ -11,6 +11,8 @@ A股/港股股票投资分析工具集。包含四个 skill：
 
 分析前先加载 `security-analysis` skill（opencode 用 `skill` 工具加载，Claude Code 用 `/security-analysis`），其中含完整的子文档、报告框架与行业知识库。
 
+**各 skill 需要哪些数据、数据源是什么，见根目录 `DATA-SOURCES.md`**（四个 skill 的数据需求、上游接口、数据流链条与覆盖度缺口）。表清单与列数仍以 `CLAUDE.md`「数据库表」一节为唯一维护点。
+
 做巴菲特视角的问诊时加载 `buffett-lens`（Claude Code 用 `/buffett-lens`）；问诊需要哪些数据、每项从哪来见该技能的 `data-sources.md`（A股/港股字段清单、科目代码映射、口径陷阱、覆盖度现状）。它自带的语料索引库 `buffett_corpus.db` 与 `financial_data.db` **分开存放、互不相干**，语料原文**严禁写入 `financial_data.db`**。
 
 ## 技能单一数据源与软链接（重要）
@@ -36,6 +38,10 @@ A股/港股股票投资分析工具集。包含四个 skill：
 - 无测试、无 lint、无 CI。分析报告写入 `report/`。
 - `financial_data.db` 已入库且随每次采集变动，`git status` 常显示其修改属正常。
 - 当前环境缺少 `rg`（ripgrep），opencode 的 skill 工具加载时会报 "ripgrep execution failed"；此时仍可直接 Read `.claude/skills/security-analysis/SKILL.md` 获取完整框架。
+
+## 提交约定（重要）
+
+- **提交信息不得包含 `Co-Authored-By` 署名行**（含 `Co-Authored-By: Claude <noreply@anthropic.com>`），也不得加任何 AI 工具署名/生成标记。提交信息只写用户本人署名，正文只描述改动本身。此项与 `.claude/settings.json` 无关，属项目约定，**任何工具（Claude Code / DSH / Qoder / OpenCode）提交时都须遵守**。
 
 ## 常用命令（项目根目录执行）
 
@@ -84,7 +90,7 @@ A股/港股股票投资分析工具集。包含四个 skill：
 - `pdf_helper.py` 封装 PyMuPDF/pypdf/pdfminer.six 三种后端，优先 PyMuPDF
 - `ColumnPage` 通过 `get_text('dict')` 获取 span 坐标，按 X 频率聚类列、Y 自适应聚类行
 - 精确对齐栏目与金额，解决多列表格中传统正则解析的错位问题
-- 两个 PDF skill（extractor 和 downloader）各有一份相同的 `pdf_helper.py` 副本
+- `pdf_helper.py` **唯一实现在 extractor**（`financial-report-pdf-extractor/scripts/pdf_helper.py`），downloader 目录下那份是指向它的软链接——改一处即可，不存在两份副本需要同步
 
 ## 报告规范（解读分析结果时）
 

@@ -51,6 +51,10 @@ stock/
 
 原先的 `financial_report.py`、`etf_weight.py`、`stock_dividend.py` 已删除——三者的全部函数分别由 `scripts/collect_financial_data.py`、`scripts/etf_valuation.py`、`scripts/dividend_stock_analysis.py` 覆盖（函数级比对确认）。**不要再按旧文档从根目录 import 这三个模块。**
 
+### 数据需求与数据源
+
+**四个 skill 各自需要哪些数据、每项数据从哪个上游来、落在哪个文件**，见根目录 [DATA-SOURCES.md](DATA-SOURCES.md)。本文档只维护**表清单**（见下「数据库表」一节），DATA-SOURCES.md 只维护**数据流向**（哪个 skill 读/写哪些表、数据源接口、覆盖度缺口），两者不重复。
+
 ## 五大功能模块
 
 | 模块 | 脚本 | 用途 |
@@ -204,6 +208,12 @@ python .claude/skills/security-analysis/scripts/collect_financial_data.py query 
 ### 遗留表（3张）—— 无代码引用
 
 - `资产负债表` / `利润表` / `现金流量表` — 各 234 行，schema 与 `em_*` 三张**逐列相同**，仅含 6 只白酒股（`000568` `000596` `000799` `002304` `600809` `603369`）。**自首个 git 提交即在库中，当前无任何代码路径产出或读取**（采集脚本写表时一律加 `sina_`/`ths_`/`em_`/`hk_` 前缀，不会写这三张中文名表）。保留不删，仅作登记。
+
+## 提交约定
+
+- **提交信息不得包含 `Co-Authored-By` 署名行**（含 `Co-Authored-By: Claude <noreply@anthropic.com>`），也不得加任何 AI 工具署名/生成标记。**提交信息只写用户本人的署名**，正文只描述改动本身。
+
+> 2026-09-14 已据此重写过历史：`650a8eb`、`70279f2` 两个提交的信息被剥掉该 trailer，分别变为 `c67f9f8`、`429481e`，并强推覆盖远程。更早的 7 个提交 hash 未变，**全部提交的文件内容都与重写前逐字节相同**（以 tree hash 相同验证）。若在旧文档或对话里看到这两个旧 hash，按新 hash 理解。
 
 ## 重要说明
 
